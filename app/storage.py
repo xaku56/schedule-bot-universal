@@ -1,0 +1,206 @@
+from __future__ import annotations
+
+import datetime as dt
+import json
+import logging
+import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+class Storage:
+    def __init__(self, data_dir: Path):
+        self.data_dir = data_dir
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.cache_path = self.data_dir / "schedule_cache.json"
+        self.db_path = self.data_dir / "bot.sqlite3"
+        self._init_database()
+
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        connection = sqlite3.connect(self.db_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
+    def _init_database(self) -> None:
+        with self.connect() as db:
+            db.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS bindings (
+                    chat_id INTEGER NOT NULL,
+                    thread_id INTEGER NOT NULL DEFAULT 0,
+                    group_name TEXT NOT NULL,
+                    autopost INTEGER NOT NULL DEFAULT 0,
+                    autopost_failures INTEGER NOT NULL DEFAULT 0,
+                    autopost_last_error TEXT,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (chat_id, thread_id)
+                );
+                CREATE TABLE IF NOT EXISTS sent_autoposts (
+                    chat_id INTEGER NOT NULL,
+                    thread_id INTEGER NOT NULL DEFAULT 0,
+                    group_name TEXT NOT NULL,
+                    target_date TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (chat_id, thread_id, group_name, target_date)
+                );
+                """
+            )
+            self._ensure_column(
+                db, "bindings", "autopost_failures", "INTEGER NOT NULL DEFAULT 0"
+            )
+            self._ensure_column(db, "bindings", "autopost_last_error", "TEXT")
+
+    @staticmethod
+    def _ensure_column(
+        db: sqlite3.Connection, table: str, column: str, declaration: str
+    ) -> None:
+        columns = {str(row[1]) for row in db.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+
+    def load_cache(self) -> dict[str, Any] | None:
+        if not self.cache_path.exists():
+            return None
+        try:
+            with self.cache_path.open("r", encoding="utf-8") as file:
+                value = json.load(file)
+            return value if isinstance(value, dict) else None
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Ignoring unreadable schedule cache at %s", self.cache_path)
+            return None
+
+    def save_cache(self, cache: dict[str, Any]) -> None:
+        temporary = self.cache_path.with_suffix(".tmp")
+        with temporary.open("w", encoding="utf-8") as file:
+            json.dump(cache, file, ensure_ascii=False, indent=2)
+        temporary.replace(self.cache_path)
+
+    def set_binding(self, chat_id: int, thread_id: int | None, group: str) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO bindings(chat_id, thread_id, group_name)
+                VALUES (?, ?, ?)
+                ON CONFLICT(chat_id, thread_id) DO UPDATE SET
+                    group_name=excluded.group_name,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (chat_id, thread_id or 0, group),
+            )
+
+    def get_binding(self, chat_id: int, thread_id: int | None) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute(
+                "SELECT * FROM bindings WHERE chat_id=? AND thread_id=?",
+                (chat_id, thread_id or 0),
+            ).fetchone()
+
+    def set_autopost(self, chat_id: int, thread_id: int | None, enabled: bool) -> bool:
+        with self.connect() as db:
+            cursor = db.execute(
+                """
+                UPDATE bindings
+                SET autopost=?,
+                    autopost_failures=CASE WHEN ?=1 THEN 0 ELSE autopost_failures END,
+                    autopost_last_error=CASE WHEN ?=1 THEN NULL ELSE autopost_last_error END,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE chat_id=? AND thread_id=?
+                """,
+                (int(enabled), int(enabled), int(enabled), chat_id, thread_id or 0),
+            )
+            return cursor.rowcount > 0
+
+    def autopost_bindings(self) -> list[sqlite3.Row]:
+        with self.connect() as db:
+            return db.execute("SELECT * FROM bindings WHERE autopost=1").fetchall()
+
+    def autopost_fingerprint(
+        self, chat_id: int, thread_id: int, group: str, target_date: str
+    ) -> str | None:
+        with self.connect() as db:
+            row = db.execute(
+                """
+                SELECT fingerprint FROM sent_autoposts
+                WHERE chat_id=? AND thread_id=? AND group_name=? AND target_date=?
+                """,
+                (chat_id, thread_id, group, target_date),
+            ).fetchone()
+            return str(row[0]) if row else None
+
+    def mark_autopost(
+        self,
+        chat_id: int,
+        thread_id: int,
+        group: str,
+        target_date: str,
+        fingerprint: str,
+    ) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO sent_autoposts(chat_id, thread_id, group_name, target_date, fingerprint)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id, thread_id, group_name, target_date) DO UPDATE SET
+                    fingerprint=excluded.fingerprint,
+                    sent_at=CURRENT_TIMESTAMP
+                """,
+                (chat_id, thread_id, group, target_date, fingerprint),
+            )
+
+    def record_autopost_success(self, chat_id: int, thread_id: int) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                UPDATE bindings
+                SET autopost_failures=0, autopost_last_error=NULL, updated_at=CURRENT_TIMESTAMP
+                WHERE chat_id=? AND thread_id=?
+                """,
+                (chat_id, thread_id),
+            )
+
+    def record_autopost_failure(
+        self, chat_id: int, thread_id: int, error: str, disable_after: int = 3
+    ) -> bool:
+        with self.connect() as db:
+            db.execute(
+                """
+                UPDATE bindings
+                SET autopost_failures=autopost_failures + 1,
+                    autopost_last_error=?,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE chat_id=? AND thread_id=?
+                """,
+                (error[:500], chat_id, thread_id),
+            )
+            row = db.execute(
+                "SELECT autopost_failures FROM bindings WHERE chat_id=? AND thread_id=?",
+                (chat_id, thread_id),
+            ).fetchone()
+            failures = int(row[0]) if row else 0
+            disabled = failures >= disable_after
+            if disabled:
+                db.execute(
+                    "UPDATE bindings SET autopost=0 WHERE chat_id=? AND thread_id=?",
+                    (chat_id, thread_id),
+                )
+            return disabled
+
+    def cleanup_autopost_history(self, keep_days: int = 60) -> int:
+        today = dt.datetime.now(dt.timezone.utc).date()
+        cutoff = (today - dt.timedelta(days=keep_days)).isoformat()
+        with self.connect() as db:
+            cursor = db.execute(
+                "DELETE FROM sent_autoposts WHERE target_date < ?",
+                (cutoff,),
+            )
+            return cursor.rowcount
