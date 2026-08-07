@@ -79,7 +79,3 @@ class AutopostTests(unittest.TestCase):
             replacements.item["modified"] = "2026-09-01T12:30:00Z"
             service.run(now)
             self.assertEqual(len(sender.messages), 2)
-
-
-if __name__ == "__main__":
-    unittest.main()

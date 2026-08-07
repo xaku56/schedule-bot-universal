@@ -50,7 +50,3 @@ class TelegramQueueTests(unittest.TestCase):
                 sender.send_message(1, "message")
         finally:
             sender.close()
-
-
-if __name__ == "__main__":
-    unittest.main()

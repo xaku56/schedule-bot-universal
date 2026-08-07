@@ -87,10 +87,6 @@ class Bot:
             validate_semester=self._validate_semester_config,
         )
 
-    @property
-    def _admin_cache(self) -> dict[tuple[int, int], tuple[bool, float]]:
-        return self.handlers.admin_cache
-
     def initialize(self) -> None:
         try:
             changed, message = self.schedules.refresh(
@@ -143,9 +139,6 @@ class Bot:
             raise ValueError(
                 f"NUMERATOR_WEEK_START={week_start} does not match PDF semester {semester}"
             )
-
-    def _can_manage(self, chat: dict[str, Any], user: dict[str, Any]) -> bool:
-        return self.handlers.can_manage(chat, user)
 
     def _status_text(self) -> str:
         cache = self.schedules.cache
@@ -276,7 +269,7 @@ class Bot:
         self._closed = True
         logger.info("Stopping bot")
         self.executor.shutdown(wait=True, cancel_futures=False)
-        self.sender.close(wait=True)
+        self.sender.close()
 
     def run(self) -> None:
         self.initialize()

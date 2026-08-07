@@ -4,6 +4,8 @@ import datetime as dt
 import html
 from typing import Any
 
+from .pdf_parser import PAIR_TIMES_DISPLAY
+
 WEEKDAY_ACCUSATIVE = {
     "понедельник": "понедельник",
     "вторник": "вторник",
@@ -28,15 +30,6 @@ MONTHS = [
     "ноября",
     "декабря",
 ]
-PAIR_TIMES = {
-    1: "08:00-09:30",
-    2: "09:40-11:10",
-    3: "11:20-12:50",
-    4: "13:20-14:50",
-    5: "15:00-16:30",
-    6: "16:40-18:10",
-    7: "18:20-19:50",
-}
 
 
 def format_schedule(schedule: dict[str, Any], note: str | None = None) -> str:
@@ -65,7 +58,7 @@ def format_schedule(schedule: dict[str, Any], note: str | None = None) -> str:
             detail += " / <b>ОТМЕНА</b>"
         if lesson.get("parse_warning"):
             detail += " / ⚠️ <i>проверьте исходный PDF</i>"
-        lines.extend(["", f"<b>{pair}) {PAIR_TIMES[pair]}</b>", detail])
+        lines.extend(["", f"<b>{pair}) {PAIR_TIMES_DISPLAY[pair]}</b>", detail])
     if note:
         lines.extend(["", html.escape(note)])
     return "\n".join(lines)

@@ -11,15 +11,7 @@ from .pdf_parser import PARSER_VERSION, WEEKDAYS, normalize_group, parse_schedul
 from .storage import Storage
 from .yandex_disk import download_public_file, file_fingerprint, list_public_files
 
-WEEKDAY_BY_NUMBER = {
-    0: "понедельник",
-    1: "вторник",
-    2: "среда",
-    3: "четверг",
-    4: "пятница",
-    5: "суббота",
-    6: "воскресенье",
-}
+WEEKDAYS_BY_NUMBER = [*WEEKDAYS, "суббота", "воскресенье"]
 CACHE_SCHEMA_VERSION = 2
 
 
@@ -76,27 +68,11 @@ def week_type_for_date(target_date: dt.date, numerator_week_start: dt.date) -> s
 
 
 def parse_flexible_date(value: str) -> dt.date:
-    text = value.strip()
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
-        try:
-            return dt.date.fromisoformat(text)
-        except ValueError:
-            pass
-    match = re.fullmatch(r"(\d{2})\.(\d{2})\.(\d{4})", text)
-    if match:
-        day, month, year = map(int, match.groups())
-        try:
-            return dt.date(year, month, day)
-        except ValueError:
-            pass
-    match = re.fullmatch(r"(\d{4})\.(\d{2})\.(\d{2})", text)
-    if match:
-        year, month, day = map(int, match.groups())
-        try:
-            return dt.date(year, month, day)
-        except ValueError:
-            pass
-    raise ValueError("Используй формат YYYY-MM-DD или DD.MM.YYYY")
+    try:
+        day, month, year = map(int, value.strip().split("."))
+        return dt.date(year, month, day)
+    except ValueError:
+        raise ValueError("Используй формат DD.MM.YYYY") from None
 
 
 def _validated_pdf(content: bytes, name: str) -> bytes:
@@ -236,7 +212,7 @@ class ScheduleRepository:
         group_data = self.cache.get("groups", {}).get(canonical)
         if not group_data:
             raise KeyError(f"Группа {group} не найдена")
-        weekday = WEEKDAY_BY_NUMBER[target_date.weekday()]
+        weekday = WEEKDAYS_BY_NUMBER[target_date.weekday()]
         week_type = week_type_for_date(target_date, numerator_week_start)
         lessons: list[dict[str, Any]] = []
         if weekday in WEEKDAYS:
@@ -250,14 +226,3 @@ class ScheduleRepository:
             "replacements_count": 0,
             "source": "pdf",
         }
-
-
-__all__ = [
-    "CACHE_SCHEMA_VERSION",
-    "PARSER_VERSION",
-    "ScheduleRepository",
-    "_select_course_files",
-    "_semester_key",
-    "parse_flexible_date",
-    "week_type_for_date",
-]

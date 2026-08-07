@@ -63,7 +63,6 @@ class TelegramSendQueue:
         reply_markup: dict[str, Any] | None = None,
         *,
         priority: int = 0,
-        wait: bool = True,
     ) -> None:
         if self._closed.is_set():
             raise RuntimeError("Telegram send queue is closed")
@@ -78,8 +77,7 @@ class TelegramSendQueue:
             result=result,
         )
         self._queue.put(item, timeout=10)
-        if wait:
-            result.result()
+        result.result()
 
     def _rate_limit(self, chat_id: int) -> None:
         now = time.monotonic()
@@ -128,7 +126,7 @@ class TelegramSendQueue:
             finally:
                 self._queue.task_done()
 
-    def close(self, wait: bool = True) -> None:
+    def close(self) -> None:
         if self._closed.is_set():
             return
         self._closed.set()
@@ -145,6 +143,5 @@ class TelegramSendQueue:
                 stop=True,
             )
         )
-        if wait:
-            result.result()
-            self._worker.join()
+        result.result()
+        self._worker.join()

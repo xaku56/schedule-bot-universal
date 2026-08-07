@@ -9,7 +9,6 @@ from unittest.mock import patch
 
 from app.config import Config
 from app.pdf_parser import (
-    PARSER_VERSION,
     _is_complete_lesson,
     _lesson_from_raw,
     normalize_group,
@@ -17,9 +16,9 @@ from app.pdf_parser import (
 )
 from app.replacement_service import apply_replacements
 from app.schedule_service import (
-    CACHE_SCHEMA_VERSION,
     _select_course_files,
     _semester_key,
+    parse_flexible_date,
     week_type_for_date,
 )
 from app.storage import Storage
@@ -39,6 +38,11 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(
             week_type_for_date(start + dt.timedelta(days=14), start), "числитель"
         )
+
+    def test_command_date_format(self) -> None:
+        self.assertEqual(parse_flexible_date("07.08.2026"), dt.date(2026, 8, 7))
+        with self.assertRaises(ValueError):
+            parse_flexible_date("2026-08-07")
 
     def test_pdf_lesson_tolerates_source_typos(self) -> None:
         self.assertTrue(_is_complete_lesson("Егорова\nИнформатика\n207 каб."))
@@ -68,10 +72,6 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(semester, "2025-2026:semester-2")
         self.assertEqual([course for course, _ in selected], [1, 2, 3, 4])
         self.assertEqual(_semester_key("1 курс 2 семестр 2025-2026.pdf"), semester)
-
-    def test_version_constants_are_positive(self) -> None:
-        self.assertGreaterEqual(PARSER_VERSION, 1)
-        self.assertGreaterEqual(CACHE_SCHEMA_VERSION, 1)
 
     def test_replacement_merge(self) -> None:
         schedule = {
@@ -185,7 +185,3 @@ class RealPdfTests(unittest.TestCase):
                 self.assertTrue(warning_raw.issubset(preserved))
             total += len(parsed)
         self.assertEqual(total, 82)
-
-
-if __name__ == "__main__":
-    unittest.main()

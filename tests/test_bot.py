@@ -56,7 +56,7 @@ class BotPermissionTests(unittest.TestCase):
             try:
                 bot.telegram = FakeTelegram()
                 self.assertTrue(
-                    bot._can_manage(
+                    bot.handlers.can_manage(
                         {"id": 42, "type": "private"},
                         {"id": 42},
                     )
@@ -73,12 +73,12 @@ class BotPermissionTests(unittest.TestCase):
                 bot.handlers.telegram = fake
                 chat = {"id": -1001, "type": "supergroup"}
                 user = {"id": 7}
-                self.assertTrue(bot._can_manage(chat, user))
-                self.assertTrue(bot._can_manage(chat, user))
+                self.assertTrue(bot.handlers.can_manage(chat, user))
+                self.assertTrue(bot.handlers.can_manage(chat, user))
                 self.assertEqual(fake.member_calls, 1)
-                bot._admin_cache.clear()
+                bot.handlers.admin_cache.clear()
                 fake.status = "member"
-                self.assertFalse(bot._can_manage(chat, user))
+                self.assertFalse(bot.handlers.can_manage(chat, user))
             finally:
                 bot.close()
 
@@ -112,7 +112,3 @@ class BotPermissionTests(unittest.TestCase):
                 self.assertEqual(sender.messages, ["Некорректный номер курса."])
             finally:
                 bot.close()
-
-
-if __name__ == "__main__":
-    unittest.main()

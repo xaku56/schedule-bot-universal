@@ -75,7 +75,3 @@ class SecurityTests(unittest.TestCase):
         rendered = formatter.format(record)
         self.assertNotIn(token, rendered)
         self.assertIn("REDACTED", rendered)
-
-
-if __name__ == "__main__":
-    unittest.main()

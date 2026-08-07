@@ -11,8 +11,7 @@ from typing import Any
 
 from defusedxml import ElementTree as ET
 
-from .pdf_parser import normalize_group
-from .schedule_formatter import PAIR_TIMES
+from .pdf_parser import PAIR_TIMES_DISPLAY, normalize_group
 from .yandex_disk import download_public_file, file_fingerprint, list_public_files
 
 W_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
@@ -72,10 +71,6 @@ def parse_replacements_all(content: bytes) -> dict[str, list[dict[str, str]]]:
     return result
 
 
-def parse_replacements(content: bytes, target_group: str) -> list[dict[str, str]]:
-    return parse_replacements_all(content).get(normalize_group(target_group), [])
-
-
 def _pair_number(value: str) -> int | None:
     compact = re.sub(r"[^IVX0-9]", "", value.upper())
     if compact.isdigit():
@@ -133,7 +128,7 @@ def apply_replacements(
         result["pairs"].append(
             {
                 "pair": pair,
-                "time": PAIR_TIMES[pair],
+                "time": PAIR_TIMES_DISPLAY[pair],
                 "teacher": teacher,
                 "subject": subject,
                 "room": replacement["room"],

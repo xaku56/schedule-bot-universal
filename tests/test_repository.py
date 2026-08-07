@@ -132,7 +132,3 @@ class RepositoryRefreshTests(unittest.TestCase):
                 self.assertTrue(changed)
                 download.assert_not_called()
                 self.assertEqual(parse.call_count, 4)
-
-
-if __name__ == "__main__":
-    unittest.main()
