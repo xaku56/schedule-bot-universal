@@ -132,4 +132,21 @@ python -m bandit -r app
 
 ## Развёртывание
 
-Для постоянной работы лучше запускать `python main.py` как `systemd`-сервис с `Restart=always` и `EnvironmentFile` либо в Docker с постоянным томом для каталога `data/`. В `data` находятся кэш PDF, SQLite-привязки тем и история автоотправки; каталог нужно сохранять между перезапусками.
+Ubuntu 24.04 использует Python 3.12 и подходит для запуска бота. После клонирования репозитория:
+
+```bash
+cp .env.example .env
+nano .env
+chmod +x install-ubuntu.sh
+sudo ./install-ubuntu.sh
+```
+
+Скрипт устанавливает приложение в `/opt/schedule-bot-universal`, создаёт отдельного системного пользователя и сервис `schedule-bot`. Повторный запуск обновляет код и зависимости, не удаляя базу и кэш в `data/`.
+
+```bash
+sudo systemctl status schedule-bot
+sudo journalctl -u schedule-bot -f
+sudo systemctl restart schedule-bot
+```
+
+Для VPS с одним ядром укажите `BOT_WORKERS=2`. При 1 ГБ памяти, особенно рядом с 3x-ui, рекомендуется иметь swap. Боту не нужен входящий порт: он обращается к Telegram и Яндекс.Диску исходящими HTTPS-запросами.
