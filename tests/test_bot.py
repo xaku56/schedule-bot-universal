@@ -4,6 +4,7 @@ import datetime as dt
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from app.bot import Bot
 from app.config import Config
@@ -110,5 +111,40 @@ class BotPermissionTests(unittest.TestCase):
                     }
                 )
                 self.assertEqual(sender.messages, ["Некорректный номер курса."])
+            finally:
+                bot.close()
+
+    def test_week_uses_base_schedule_without_replacements(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bot = self.make_bot(directory)
+            try:
+                bot.storage.set_binding(42, None, "11 ис")
+                sender = FakeSender()
+                bot.handlers.sender = sender
+                bot.handlers.validate_semester = lambda: None
+                bot.handlers.schedules.schedule_for = MagicMock(
+                    side_effect=lambda group, target_date, _week_start: {
+                        "group": group,
+                        "date": target_date.isoformat(),
+                        "weekday": "понедельник",
+                        "week_type": "числитель",
+                        "pairs": [],
+                        "replacements_count": 0,
+                        "source": "pdf",
+                    }
+                )
+                bot.handlers.replacements.apply_for_date = MagicMock()
+
+                bot.handlers.handle_message(
+                    {
+                        "chat": {"id": 42, "type": "private"},
+                        "from": {"id": 42},
+                        "text": "/week",
+                    }
+                )
+
+                self.assertEqual(bot.handlers.schedules.schedule_for.call_count, 5)
+                bot.handlers.replacements.apply_for_date.assert_not_called()
+                self.assertEqual(len(sender.messages), 5)
             finally:
                 bot.close()

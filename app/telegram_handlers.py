@@ -112,12 +112,18 @@ class TelegramHandlers:
         )
 
     def _schedule(
-        self, group: str, target_date: dt.date
+        self,
+        group: str,
+        target_date: dt.date,
+        *,
+        include_replacements: bool = True,
     ) -> tuple[dict[str, Any], str | None]:
         self.validate_semester()
         base = self.schedules.schedule_for(
             group, target_date, self.config.numerator_week_start
         )
+        if not include_replacements:
+            return base, None
         final, replacement_fingerprint = self.replacements.apply_for_date(
             base, target_date
         )
@@ -127,9 +133,17 @@ class TelegramHandlers:
         return final, note
 
     def _send_date(
-        self, chat_id: int, thread_id: int | None, group: str, target_date: dt.date
+        self,
+        chat_id: int,
+        thread_id: int | None,
+        group: str,
+        target_date: dt.date,
+        *,
+        include_replacements: bool = True,
     ) -> None:
-        schedule, note = self._schedule(group, target_date)
+        schedule, note = self._schedule(
+            group, target_date, include_replacements=include_replacements
+        )
         self.sender.send_message(chat_id, format_schedule(schedule, note), thread_id)
 
     def handle_message(self, message: dict[str, Any]) -> None:
@@ -207,6 +221,7 @@ class TelegramHandlers:
                     thread_id,
                     group,
                     monday + dt.timedelta(days=day_offset),
+                    include_replacements=False,
                 )
         elif command == "/autopost_on":
             if not self.can_manage(chat, user):
