@@ -6,8 +6,15 @@ from typing import Any
 
 import pdfplumber
 
-PARSER_VERSION = 3
-WEEKDAYS = ["понедельник", "вторник", "среда", "четверг", "пятница"]
+PARSER_VERSION = 4
+WEEKDAYS = [
+    "понедельник",
+    "вторник",
+    "среда",
+    "четверг",
+    "пятница",
+    "суббота",
+]
 PAIR_TIMES = {
     "8.00-9.30": 1,
     "9.40-11.10": 2,
@@ -107,7 +114,7 @@ def _looks_like_teacher(line: str) -> bool:
         return False
     return bool(
         "/" in text
-        or re.search(r"[А-ЯЁA-Z]\.*\s*[А-ЯЁA-Z]\.+", text)
+        or re.search(r"\b[А-ЯЁA-Z]\.?\s*[А-ЯЁA-Z](?:[.,])?$", text)
         or re.fullmatch(r"[А-ЯЁ][а-яё-]+(?:\s*/\s*[А-ЯЁ][а-яё-]+)+", text)
         or re.fullmatch(r"[А-ЯЁ][а-яё-]+", text)
     )
@@ -127,11 +134,7 @@ def _looks_like_room(line: str) -> bool:
 
 def _is_complete_lesson(raw: str) -> bool:
     lines = [line for line in raw.splitlines() if line.strip()]
-    return (
-        len(lines) >= 3
-        and _looks_like_teacher(lines[0])
-        and _looks_like_room(lines[-1])
-    )
+    return len(lines) >= 2 and _looks_like_teacher(lines[0])
 
 
 def _find_group_header(
@@ -168,6 +171,40 @@ def _header_rows(table: list[list[str | None]], group_columns: list[int]) -> lis
     return result
 
 
+def _repair_pair_boundaries(fragments: dict[int, list[str]]) -> None:
+    """Move lesson text that begins before the matching time cell in the PDF grid."""
+    for pair in range(1, 7):
+        current = fragments[pair]
+        following = fragments[pair + 1]
+
+        while sum(_looks_like_teacher(value.splitlines()[0]) for value in current) > 2:
+            moved = current.pop()
+            if following:
+                first_lines = following[0].splitlines()
+                continuation = not _looks_like_teacher(first_lines[0]) or (
+                    len(first_lines) <= 2 and _looks_like_room(first_lines[-1])
+                )
+                moved_lines = moved.splitlines()
+                if len(moved_lines) == 1 or (
+                    continuation and not _looks_like_room(moved_lines[-1])
+                ):
+                    following[0] = f"{moved}\n{following[0]}"
+                    continue
+            following.insert(0, moved)
+
+        if not current or not following:
+            continue
+        last_lines = current[-1].splitlines()
+        first_lines = following[0].splitlines()
+        continuation = not _looks_like_teacher(first_lines[0]) or (
+            len(first_lines) <= 2 and _looks_like_room(first_lines[-1])
+        )
+        if len(last_lines) == 1 or (
+            continuation and not _looks_like_room(last_lines[-1])
+        ):
+            following[0] = f"{current.pop()}\n{following[0]}"
+
+
 def parse_schedule_pdf(path: Path, course: int | None = None) -> dict[str, Any]:
     with pdfplumber.open(path) as document:
         tables: list[list[list[str | None]]] = []
@@ -182,11 +219,11 @@ def parse_schedule_pdf(path: Path, course: int | None = None) -> dict[str, Any]:
 
     _, group_columns, groups = _find_group_header(table)
     header_rows = _header_rows(table, group_columns)
-    if len(header_rows) < 5:
+    if len(header_rows) not in (5, 6):
         raise ValueError(
-            f"Expected five weekday blocks in {path.name}, found {len(header_rows)}"
+            f"Expected five or six weekday blocks in {path.name}, "
+            f"found {len(header_rows)}"
         )
-    header_rows = header_rows[:5]
 
     result: dict[str, Any] = {
         group: {
@@ -227,17 +264,36 @@ def parse_schedule_pdf(path: Path, course: int | None = None) -> dict[str, Any]:
         for group, column in zip(groups, group_columns):
             variants_by_pair: dict[int, list[str]] = {pair: [] for pair in range(1, 8)}
             warning_values: set[str] = set()
-            pending_fragment = ""
-            pending_pair: int | None = None
+            fragments_by_pair: dict[int, list[str]] = {}
             for pair, row_start, row_end in pair_ranges:
-                for row_index in range(row_start, row_end):
-                    row = table[row_index]
-                    raw = _clean_cell(row[column] if column < len(row) else None)
-                    if not raw:
-                        continue
+                fragments_by_pair[pair] = [
+                    raw
+                    for row_index in range(row_start, row_end)
+                    if (
+                        raw := _clean_cell(
+                            table[row_index][column]
+                            if column < len(table[row_index])
+                            else None
+                        )
+                    )
+                ]
+            _repair_pair_boundaries(fragments_by_pair)
+
+            for pair in range(1, 8):
+                pending_fragment = ""
+                for raw in fragments_by_pair[pair]:
                     if _is_complete_lesson(raw):
                         if raw not in variants_by_pair[pair]:
                             variants_by_pair[pair].append(raw)
+                        continue
+
+                    variants = variants_by_pair[pair]
+                    if (
+                        variants
+                        and _looks_like_room(raw)
+                        and not _looks_like_room(variants[-1].splitlines()[-1])
+                    ):
+                        variants[-1] = f"{variants[-1]}\n{raw}"
                         continue
 
                     candidate = (
@@ -249,26 +305,23 @@ def parse_schedule_pdf(path: Path, course: int | None = None) -> dict[str, Any]:
                         if candidate not in variants_by_pair[pair]:
                             variants_by_pair[pair].append(candidate)
                         pending_fragment = ""
-                        pending_pair = None
                     else:
-                        if not pending_fragment:
-                            pending_pair = pair
                         pending_fragment = candidate
 
-            if pending_fragment and pending_pair is not None:
-                # Never silently lose source text. An unusual teacher/room spelling is
-                # safer to expose as a warning than to remove from the timetable.
-                if pending_fragment not in variants_by_pair[pending_pair]:
-                    variants_by_pair[pending_pair].append(pending_fragment)
-                warning_values.add(pending_fragment)
-                result[group]["warnings"].append(
-                    {
-                        "weekday": WEEKDAYS[day_index],
-                        "pair": pending_pair,
-                        "raw": pending_fragment,
-                        "reason": "unresolved_pdf_fragment",
-                    }
-                )
+                if pending_fragment:
+                    # Never silently lose source text. An unusual teacher spelling is
+                    # safer to expose as a warning than to remove from the timetable.
+                    if pending_fragment not in variants_by_pair[pair]:
+                        variants_by_pair[pair].append(pending_fragment)
+                    warning_values.add(pending_fragment)
+                    result[group]["warnings"].append(
+                        {
+                            "weekday": WEEKDAYS[day_index],
+                            "pair": pair,
+                            "raw": pending_fragment,
+                            "reason": "unresolved_pdf_fragment",
+                        }
+                    )
 
             for pair in range(1, 8):
                 variants = variants_by_pair[pair]

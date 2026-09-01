@@ -11,7 +11,7 @@ from .pdf_parser import PARSER_VERSION, WEEKDAYS, normalize_group, parse_schedul
 from .storage import Storage
 from .yandex_disk import download_public_file, file_fingerprint, list_public_files
 
-WEEKDAYS_BY_NUMBER = [*WEEKDAYS, "суббота", "воскресенье"]
+WEEKDAYS_BY_NUMBER = [*WEEKDAYS, "воскресенье"]
 CACHE_SCHEMA_VERSION = 2
 
 
@@ -216,7 +216,9 @@ class ScheduleRepository:
         week_type = week_type_for_date(target_date, numerator_week_start)
         lessons: list[dict[str, Any]] = []
         if weekday in WEEKDAYS:
-            lessons = copy.deepcopy(group_data["days"][weekday][week_type])
+            lessons = copy.deepcopy(
+                group_data["days"].get(weekday, {}).get(week_type, [])
+            )
         return {
             "group": canonical,
             "date": target_date.isoformat(),

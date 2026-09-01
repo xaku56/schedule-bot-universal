@@ -5,17 +5,21 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from app.config import Config
 from app.pdf_parser import (
+    PAIR_TIMES,
+    WEEKDAYS,
     _is_complete_lesson,
     _lesson_from_raw,
+    _repair_pair_boundaries,
     normalize_group,
     parse_schedule_pdf,
 )
 from app.replacement_service import apply_replacements
 from app.schedule_service import (
+    WEEKDAYS_BY_NUMBER,
     _select_course_files,
     _semester_key,
     parse_flexible_date,
@@ -39,12 +43,18 @@ class CoreTests(unittest.TestCase):
             week_type_for_date(start + dt.timedelta(days=14), start), "числитель"
         )
 
+    def test_weekday_mapping_includes_saturday_once(self) -> None:
+        self.assertEqual(WEEKDAYS[-1], "суббота")
+        self.assertEqual(WEEKDAYS_BY_NUMBER, [*WEEKDAYS, "воскресенье"])
+
     def test_command_date_format(self) -> None:
         self.assertEqual(parse_flexible_date("07.08.2026"), dt.date(2026, 8, 7))
         with self.assertRaises(ValueError):
             parse_flexible_date("2026-08-07")
 
     def test_pdf_lesson_tolerates_source_typos(self) -> None:
+        self.assertTrue(_is_complete_lesson("Митрофанова А. А.\nМатематика"))
+        self.assertTrue(_is_complete_lesson("Терехова И.И\nОбществознание"))
         self.assertTrue(_is_complete_lesson("Егорова\nИнформатика\n207 каб."))
         self.assertTrue(
             _is_complete_lesson("Умбеткалиев Г. А.\nФизическая культура\nспорт.ззал")
@@ -57,6 +67,53 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(lesson["room"], "")
         self.assertEqual(lesson["subject"], "Начертательная геометрия")
         self.assertIn("parse_warning", lesson)
+
+    def test_pdf_pair_boundary_repair(self) -> None:
+        fragments = {pair: [] for pair in range(1, 8)}
+        fragments[1] = [
+            "Попова С. А.\nРусский язык\n417 каб.",
+            "Постникова Л. А.\nФизика\n422 каб.",
+            "Оленич Д. Л.\nОсновы безопасности и защиты",
+        ]
+        fragments[2] = ["Родины\n405 каб."]
+
+        _repair_pair_boundaries(fragments)
+
+        self.assertEqual(len(fragments[1]), 2)
+        self.assertEqual(
+            fragments[2],
+            ["Оленич Д. Л.\nОсновы безопасности и защиты\nРодины\n405 каб."],
+        )
+
+    def test_pdf_parser_accepts_five_and_six_days(self) -> None:
+        for day_count in (5, 6):
+            table: list[list[str | None]] = []
+            for _ in range(day_count):
+                table.append(["", "", "", "11 г", "12 г", "13 г", "14 г"])
+                for time in PAIR_TIMES:
+                    table.append(
+                        [
+                            "",
+                            "",
+                            time,
+                            "Иванов И. И.\nПредмет",
+                            "Иванов И. И.\nПредмет",
+                            "Иванов И. И.\nПредмет",
+                            "Иванов И. И.\nПредмет",
+                        ]
+                    )
+            page = MagicMock()
+            page.extract_tables.return_value = [table]
+            document = MagicMock()
+            document.__enter__.return_value.pages = [page]
+
+            with patch("app.pdf_parser.pdfplumber.open", return_value=document):
+                parsed = parse_schedule_pdf(Path("schedule.pdf"), 1)
+
+            saturday = parsed["11 г"]["days"]["суббота"]
+            expected = 7 if day_count == 6 else 0
+            self.assertEqual(len(saturday["числитель"]), expected)
+            self.assertEqual(len(saturday["знаменатель"]), expected)
 
     def test_semester_file_selection(self) -> None:
         files = []
