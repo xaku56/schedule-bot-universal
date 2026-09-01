@@ -142,18 +142,17 @@ python -m bandit -r app
 
 После публикации репозитория GitHub Actions выполняет unit-тесты, Ruff, Bandit и `pip-audit` при каждом push и pull request. Dependabot раз в неделю проверяет Python-зависимости и версии GitHub Actions.
 
-## Развёртывание
+## Развёртывание на Ubuntu 24.04
 
-Ubuntu 24.04 использует Python 3.12 и подходит для запуска бота. После клонирования репозитория:
+Установочный скрипт сам скачивает или обновляет проект с GitHub, устанавливает зависимости и создаёт службу `systemd`:
 
 ```bash
-cp .env.example .env
-nano .env
+wget https://raw.githubusercontent.com/ZentifyID/schedule-bot-universal/main/install-ubuntu.sh
 chmod +x install-ubuntu.sh
 sudo ./install-ubuntu.sh
 ```
 
-Скрипт устанавливает приложение в `/opt/schedule-bot-universal`, создаёт отдельного системного пользователя и сервис `schedule-bot`. Повторный запуск обновляет код и зависимости, не удаляя базу и кэш в `data/`.
+При первой установке он запросит токен Telegram и понедельник недели-числителя. Проект размещается в `/opt/schedule-bot-universal/repo`, а конфигурация и данные хранятся отдельно. Повторный запуск обновляет Git-репозиторий и зависимости, не удаляя `.env`, базу и кэш.
 
 ```bash
 sudo systemctl status schedule-bot
