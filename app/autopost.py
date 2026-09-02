@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -14,6 +16,13 @@ from .telegram_queue import TelegramSendQueue
 from .yandex_disk import file_fingerprint
 
 logger = logging.getLogger(__name__)
+
+
+def _replacement_fingerprint(replacements: list[dict[str, str]]) -> str:
+    content = json.dumps(
+        replacements, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return "group:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 class AutopostService:
@@ -43,25 +52,24 @@ class AutopostService:
         if target_date.weekday() >= 5:
             return
         replacement_item = self.replacements.find_for_date(target_date)
-        if replacement_item is None and now.time() < self.config.autopost_time:
+        if replacement_item is None:
             return
 
-        replacements_by_group = (
-            self.replacements.replacements_for_item(replacement_item)
-            if replacement_item
-            else {}
+        replacements_by_group = self.replacements.replacements_for_item(
+            replacement_item
         )
+        legacy_fingerprint = "replacement:" + file_fingerprint(replacement_item)
         for binding in bindings:
             self._send_binding(
-                binding, target_date, replacement_item, replacements_by_group
+                binding, target_date, replacements_by_group, legacy_fingerprint
             )
 
     def _send_binding(
         self,
         binding: Any,
         target_date: dt.date,
-        replacement_item: dict[str, object] | None,
         replacements_by_group: dict[str, list[dict[str, str]]],
+        legacy_fingerprint: str,
     ) -> None:
         chat_id = int(binding["chat_id"])
         thread_id = int(binding["thread_id"])
@@ -70,29 +78,23 @@ class AutopostService:
             base = self.schedules.schedule_for(
                 group, target_date, self.config.numerator_week_start
             )
-            if replacement_item:
-                schedule = apply_replacements(
-                    base, replacements_by_group.get(group, [])
-                )
-                fingerprint = "replacement:" + file_fingerprint(replacement_item)
-                note = "Автоотправка: опубликованы замены на завтра."
-            else:
-                schedule = base
-                fingerprint = "base:" + str(self.schedules.cache["source_fingerprint"])
-                note = (
-                    "Автоотправка: замены пока не опубликованы, "
-                    "показано базовое расписание."
-                )
+            group_replacements = replacements_by_group.get(group, [])
+            schedule = apply_replacements(base, group_replacements)
+            fingerprint = _replacement_fingerprint(group_replacements)
             date_key = target_date.isoformat()
-            if (
-                self.storage.autopost_fingerprint(chat_id, thread_id, group, date_key)
-                == fingerprint
-            ):
+            previous = self.storage.autopost_fingerprint(
+                chat_id, thread_id, group, date_key
+            )
+            if previous in {fingerprint, legacy_fingerprint}:
+                if previous != fingerprint:
+                    self.storage.mark_autopost(
+                        chat_id, thread_id, group, date_key, fingerprint
+                    )
                 self.storage.record_autopost_success(chat_id, thread_id)
                 return
             self.sender.send_message(
                 chat_id,
-                format_schedule(schedule, note),
+                format_schedule(schedule),
                 thread_id or None,
                 priority=10,
             )

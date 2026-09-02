@@ -44,7 +44,6 @@ class BotPermissionTests(unittest.TestCase):
             numerator_week_start=dt.date(2026, 2, 2),
             refresh_interval_minutes=60,
             replacement_check_minutes=10,
-            autopost_time=dt.time(18, 0),
             autopost_enabled=True,
             worker_count=2,
             expected_semester=None,
@@ -114,7 +113,7 @@ class BotPermissionTests(unittest.TestCase):
             finally:
                 bot.close()
 
-    def test_week_uses_base_schedule_without_replacements(self) -> None:
+    def test_week_combines_week_types_and_includes_saturday(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             bot = self.make_bot(directory)
             try:
@@ -122,29 +121,82 @@ class BotPermissionTests(unittest.TestCase):
                 sender = FakeSender()
                 bot.handlers.sender = sender
                 bot.handlers.validate_semester = lambda: None
-                bot.handlers.schedules.schedule_for = MagicMock(
-                    side_effect=lambda group, target_date, _week_start: {
+                include_saturday = True
+
+                def fake_schedule(
+                    group: str, target_date: dt.date, week_start: dt.date
+                ) -> dict:
+                    week_type = (
+                        "числитель"
+                        if ((target_date - week_start).days // 7) % 2 == 0
+                        else "знаменатель"
+                    )
+                    pairs = []
+                    if target_date.weekday() == 0:
+                        pairs = [
+                            {
+                                "pair": 1,
+                                "subject": "Общая пара",
+                                "teacher": "",
+                                "room": "101",
+                            }
+                        ]
+                    elif target_date.weekday() == 5 and include_saturday:
+                        pairs = [
+                            {
+                                "pair": 1,
+                                "subject": (
+                                    "Математика"
+                                    if week_type == "числитель"
+                                    else "Физика"
+                                ),
+                                "teacher": "",
+                                "room": "101",
+                            }
+                        ]
+                    return {
                         "group": group,
                         "date": target_date.isoformat(),
-                        "weekday": "понедельник",
-                        "week_type": "числитель",
-                        "pairs": [],
+                        "weekday": [
+                            "понедельник",
+                            "вторник",
+                            "среда",
+                            "четверг",
+                            "пятница",
+                            "суббота",
+                        ][target_date.weekday()],
+                        "week_type": week_type,
+                        "pairs": pairs,
                         "replacements_count": 0,
                         "source": "pdf",
                     }
+
+                bot.handlers.schedules.schedule_for = MagicMock(
+                    side_effect=fake_schedule
                 )
                 bot.handlers.replacements.apply_for_date = MagicMock()
+                message = {
+                    "chat": {"id": 42, "type": "private"},
+                    "from": {"id": 42},
+                    "text": "/week",
+                }
 
-                bot.handlers.handle_message(
-                    {
-                        "chat": {"id": 42, "type": "private"},
-                        "from": {"id": 42},
-                        "text": "/week",
-                    }
-                )
+                bot.handlers.handle_message(message)
 
-                self.assertEqual(bot.handlers.schedules.schedule_for.call_count, 5)
+                self.assertEqual(bot.handlers.schedules.schedule_for.call_count, 12)
                 bot.handlers.replacements.apply_for_date.assert_not_called()
+                self.assertEqual(len(sender.messages), 6)
+                self.assertEqual(sender.messages[0].count("Общая пара"), 1)
+                self.assertNotIn("Ч:", sender.messages[0])
+                self.assertIn("<b>Суббота</b>", sender.messages[-1])
+                self.assertIn("Группа: <b>11 ИС</b>", sender.messages[-1])
+                self.assertIn("Ч: Математика — 101", sender.messages[-1])
+                self.assertIn("З: Физика — 101", sender.messages[-1])
+                self.assertNotIn("2026", sender.messages[-1])
+
+                include_saturday = False
+                sender.messages.clear()
+                bot.handlers.handle_message(message)
                 self.assertEqual(len(sender.messages), 5)
             finally:
                 bot.close()

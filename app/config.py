@@ -37,7 +37,6 @@ class Config:
     numerator_week_start: dt.date
     refresh_interval_minutes: int
     replacement_check_minutes: int
-    autopost_time: dt.time
     autopost_enabled: bool
     worker_count: int
     expected_semester: str | None
@@ -60,10 +59,6 @@ class Config:
         numerator_week_start = dt.date.fromisoformat(week_start_raw)
         if numerator_week_start.weekday() != 0:
             raise ValueError("NUMERATOR_WEEK_START must be a Monday")
-        autopost_time = dt.time.fromisoformat(
-            os.getenv("AUTOPOST_TIME", "18:00").strip()
-        )
-
         return cls(
             token=token,
             schedule_url=os.getenv("SCHEDULE_YANDEX_URL", DEFAULT_SCHEDULE_URL).strip(),
@@ -79,7 +74,6 @@ class Config:
             replacement_check_minutes=max(
                 int(os.getenv("REPLACEMENT_CHECK_MINUTES", "10")), 1
             ),
-            autopost_time=autopost_time,
             autopost_enabled=_env_bool("AUTOPOST_ENABLED", True),
             worker_count=max(2, min(int(os.getenv("BOT_WORKERS", "4")), 16)),
             expected_semester=os.getenv("EXPECTED_SEMESTER", "").strip() or None,

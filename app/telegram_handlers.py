@@ -9,7 +9,7 @@ from typing import Any
 
 from .config import Config
 from .replacement_service import ReplacementRepository
-from .schedule_formatter import format_schedule
+from .schedule_formatter import format_schedule, format_weekday_schedule
 from .schedule_service import ScheduleRepository, parse_flexible_date
 from .storage import Storage
 from .telegram_api import TelegramAPI
@@ -166,7 +166,7 @@ class TelegramHandlers:
                 "/setup — выбрать группу для этого чата или темы\n"
                 "/today, /tomorrow — расписание\n"
                 "/date DD.MM.YYYY — расписание на дату\n"
-                "/week — текущая учебная неделя\n"
+                "/week — основное расписание по дням\n"
                 "/status — состояние источников и кэша\n"
                 "/autopost_on, /autopost_off — автоотправка\n"
                 "/refresh — проверить обновления PDF",
@@ -215,13 +215,32 @@ class TelegramHandlers:
             self._send_date(chat_id, thread_id, group, parse_flexible_date(argument))
         elif command == "/week":
             monday = now.date() - dt.timedelta(days=now.weekday())
-            for day_offset in range(5):
-                self._send_date(
-                    chat_id,
-                    thread_id,
+            self.validate_semester()
+            for day_offset in range(6):
+                first = self.schedules.schedule_for(
                     group,
                     monday + dt.timedelta(days=day_offset),
-                    include_replacements=False,
+                    self.config.numerator_week_start,
+                )
+                second = self.schedules.schedule_for(
+                    group,
+                    monday + dt.timedelta(days=day_offset + 7),
+                    self.config.numerator_week_start,
+                )
+                schedules = {first["week_type"]: first, second["week_type"]: second}
+                numerator_pairs = schedules["числитель"]["pairs"]
+                denominator_pairs = schedules["знаменатель"]["pairs"]
+                if day_offset == 5 and not (numerator_pairs or denominator_pairs):
+                    continue
+                self.sender.send_message(
+                    chat_id,
+                    format_weekday_schedule(
+                        group,
+                        first["weekday"],
+                        numerator_pairs,
+                        denominator_pairs,
+                    ),
+                    thread_id,
                 )
         elif command == "/autopost_on":
             if not self.can_manage(chat, user):
