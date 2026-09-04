@@ -64,6 +64,8 @@ class AutopostTests(unittest.TestCase):
             storage.set_autopost(1, 0, True)
             storage.set_binding(2, 0, "12 ис")
             storage.set_autopost(2, 0, True)
+            storage.set_binding(3, 0, "13 ис")
+            storage.set_autopost(3, 0, True)
             replacements = FakeReplacements()
             sender = FakeSender()
             service = AutopostService(
@@ -78,13 +80,42 @@ class AutopostTests(unittest.TestCase):
             )
             now = dt.datetime(2026, 9, 1, 12, 0, tzinfo=dt.timezone.utc)
             service.run(now)
+            self.assertEqual(len(sender.messages), 3)
+            self.assertTrue(any("<b>13 ИС</b>" in text for text in sender.messages))
             service.run(now)
             replacements.item["modified"] = "2026-09-01T12:30:00Z"
             replacements.by_group["12 ис"][0]["to"] = "Новый предмет"
             service.run(now)
-            self.assertEqual(len(sender.messages), 3)
+            self.assertEqual(len(sender.messages), 4)
             self.assertIn("<b>12 ИС</b>", sender.messages[-1])
             self.assertNotIn("Автоотправка:", sender.messages[-1])
+
+            replacements.item["modified"] = "2026-09-01T13:00:00Z"
+            replacements.by_group["11 ис"][0]["from"] = "Старый предмет"
+            service.run(now)
+            self.assertEqual(len(sender.messages), 4)
+
+    def test_replacement_file_for_saturday_is_sent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = Storage(Path(directory))
+            storage.set_binding(1, 0, "13 ис")
+            storage.set_autopost(1, 0, True)
+            sender = FakeSender()
+            service = AutopostService(
+                config=SimpleNamespace(
+                    numerator_week_start=dt.date(2026, 8, 31),
+                ),
+                storage=storage,
+                schedules=FakeSchedules(),
+                replacements=FakeReplacements(),
+                sender=sender,
+                validate_semester=lambda: None,
+            )
+
+            service.run(dt.datetime(2026, 9, 4, 12, 0, tzinfo=dt.timezone.utc))
+
+            self.assertEqual(len(sender.messages), 1)
+            self.assertIn("<b>13 ИС</b>", sender.messages[0])
 
     def test_no_replacement_file_sends_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -140,6 +171,6 @@ class AutopostTests(unittest.TestCase):
             self.assertEqual(sender.messages, [])
             self.assertTrue(
                 storage.autopost_fingerprint(1, 0, "11 ис", date_key).startswith(
-                    "group:"
+                    "schedule:"
                 )
             )
