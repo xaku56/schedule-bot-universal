@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from .command_guard import COMMANDS
 from .config import Config
 from .replacement_service import ReplacementRepository
 from .schedule_formatter import format_schedule, format_weekday_schedule
@@ -29,7 +30,6 @@ def _course_keyboard() -> dict[str, Any]:
                 {"text": "3 курс", "callback_data": "course:3"},
                 {"text": "4 курс", "callback_data": "course:4"},
             ],
-            [{"text": "Обновить расписание", "callback_data": "refresh"}],
         ]
     }
 
@@ -59,8 +59,6 @@ class TelegramHandlers:
         timezone: dt.tzinfo,
         validate_semester: Callable[[], None],
         status_text: Callable[[], str],
-        request_refresh: Callable[[int | None, int | None, bool], bool],
-        claim_manual_refresh: Callable[[], bool],
     ) -> None:
         self.config = config
         self.storage = storage
@@ -71,8 +69,6 @@ class TelegramHandlers:
         self.timezone = timezone
         self.validate_semester = validate_semester
         self.status_text = status_text
-        self.request_refresh = request_refresh
-        self.claim_manual_refresh = claim_manual_refresh
         self.admin_cache: dict[tuple[int, int], tuple[bool, float]] = {}
 
     def can_manage(self, chat: dict[str, Any], user: dict[str, Any]) -> bool:
@@ -158,18 +154,31 @@ class TelegramHandlers:
             return
         command, _, argument = text.partition(" ")
         command = command.split("@", 1)[0].casefold()
+        if command not in COMMANDS:
+            return
 
         if command in {"/help", "/start"}:
             self.sender.send_message(
                 chat_id,
-                "Команды:\n"
-                "/setup — выбрать группу для этого чата или темы\n"
-                "/today, /tomorrow — расписание\n"
-                "/date DD.MM.YYYY — расписание на дату\n"
-                "/week — основное расписание по дням\n"
-                "/status — состояние источников и кэша\n"
-                "/autopost_on, /autopost_off — автоотправка\n"
-                "/refresh — проверить обновления PDF",
+                "<b>Команды расписания</b>\n"
+                "/setup — выбрать группу для личного чата или текущей темы.\n"
+                "/today — расписание на сегодня с опубликованными заменами.\n"
+                "/tomorrow — расписание на завтра с опубликованными заменами.\n"
+                "/date DD.MM.YYYY — расписание на дату, например /date 16.09.2026.\n"
+                "/week — основное расписание без замен: оба варианта недели, "
+                "по сообщению на день. Ч — числитель, З — знаменатель; "
+                "суббота показывается при наличии пар.\n\n"
+                "<b>Настройки и состояние</b>\n"
+                "/autopost_on — присылать расписание на завтра после появления "
+                "файла замен, даже если для вашей группы замен нет. "
+                "Повторно — только при изменении её расписания.\n"
+                "/autopost_off — отключить автоотправку.\n"
+                "/status — сведения о загруженном расписании и кэше.\n"
+                "/help — эта справка.\n\n"
+                "Настройки действуют в текущем чате или теме. В групповых чатах "
+                "менять их могут администраторы. Расписание обновляется автоматически.\n"
+                "Частые повторы команд пропускаются. Дождитесь завершения ответа "
+                "перед повторным запросом.",
                 thread_id,
             )
             if command == "/help":
@@ -182,21 +191,6 @@ class TelegramHandlers:
                 self._deny_management(chat_id, thread_id)
                 return
             self._send_setup(chat_id, thread_id)
-            return
-        if command == "/refresh":
-            if not self.can_manage(chat, user):
-                self._deny_management(chat_id, thread_id)
-                return
-            if not self.claim_manual_refresh():
-                self.sender.send_message(
-                    chat_id,
-                    "Повторную проверку можно запустить через 30 секунд.",
-                    thread_id,
-                )
-                return
-            force = argument.strip().casefold() == "force"
-            if self.request_refresh(chat_id, thread_id, force):
-                self.sender.send_message(chat_id, "Проверяю PDF в фоне…", thread_id)
             return
 
         group = self._binding_group(chat_id, thread_id)
@@ -263,6 +257,8 @@ class TelegramHandlers:
         callback_id = str(callback.get("id", ""))
         if callback_id:
             self.telegram.answer_callback(callback_id)
+        if callback.get("data") == "refresh":
+            return
         message = callback.get("message") or {}
         chat = message.get("chat") or {}
         if "id" not in chat:
@@ -276,18 +272,8 @@ class TelegramHandlers:
             self._deny_management(chat_id, thread_id)
             return
 
-        if data in {"courses", "refresh"}:
-            if data == "refresh":
-                if not self.claim_manual_refresh():
-                    self.sender.send_message(
-                        chat_id,
-                        "Повторную проверку можно запустить через 30 секунд.",
-                        thread_id,
-                    )
-                elif self.request_refresh(chat_id, thread_id, False):
-                    self.sender.send_message(chat_id, "Проверяю PDF в фоне…", thread_id)
-            else:
-                self._send_setup(chat_id, thread_id)
+        if data == "courses":
+            self._send_setup(chat_id, thread_id)
             return
         if data.startswith("course:"):
             try:

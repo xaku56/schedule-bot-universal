@@ -12,6 +12,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .autopost import AutopostService
+from .command_guard import CommandGuard
 from .config import Config
 from .replacement_service import ReplacementRepository
 from .schedule_service import ScheduleRepository
@@ -55,7 +56,7 @@ class Bot:
         self.offset: int | None = None
         self.last_schedule_refresh = 0.0
         self.last_autopost_check = 0.0
-        self.last_manual_refresh = 0.0
+        self.command_guard = CommandGuard()
         self.executor = ThreadPoolExecutor(
             max_workers=config.worker_count,
             thread_name_prefix="schedule-bot",
@@ -75,8 +76,6 @@ class Bot:
             timezone=self.timezone,
             validate_semester=self._validate_semester_config,
             status_text=self._status_text,
-            request_refresh=self._request_refresh,
-            claim_manual_refresh=self._claim_manual_refresh,
         )
         self.autopost = AutopostService(
             config=config,
@@ -154,54 +153,21 @@ class Bot:
             f"Понедельник числителя: <code>{self.config.numerator_week_start}</code>"
         )
 
-    def _refresh_task(
-        self,
-        chat_id: int | None = None,
-        thread_id: int | None = None,
-        force: bool = False,
-    ) -> None:
+    def _refresh_task(self) -> None:
         try:
             changed, status = self.schedules.refresh(
-                force=force,
                 expected_semester=self._expected_semester_key(),
             )
             self._validate_semester_config()
             logger.info("Background refresh changed=%s: %s", changed, status)
-            if chat_id is not None:
-                self.sender.send_message(chat_id, html.escape(status), thread_id)
-        except Exception as error:
+        except Exception:
             logger.exception("Background schedule refresh failed")
-            if chat_id is not None:
-                self.sender.send_message(
-                    chat_id,
-                    f"Обновление не выполнено: {html.escape(_public_error(error))}",
-                    thread_id,
-                )
 
-    def _request_refresh(
-        self,
-        chat_id: int | None = None,
-        thread_id: int | None = None,
-        force: bool = False,
-    ) -> bool:
+    def _request_refresh(self) -> bool:
         with self._background_lock:
             if self._refresh_future and not self._refresh_future.done():
-                if chat_id is not None:
-                    self.sender.send_message(
-                        chat_id, "Обновление уже выполняется.", thread_id
-                    )
                 return False
-            self._refresh_future = self.executor.submit(
-                self._refresh_task, chat_id, thread_id, force
-            )
-            return True
-
-    def _claim_manual_refresh(self) -> bool:
-        now_ts = time.time()
-        with self._background_lock:
-            if now_ts - self.last_manual_refresh < 30:
-                return False
-            self.last_manual_refresh = now_ts
+            self._refresh_future = self.executor.submit(self._refresh_task)
             return True
 
     def _handle_update_safely(self, update: dict[str, Any]) -> None:
@@ -228,13 +194,24 @@ class Bot:
                     logger.exception("Failed to send update error message")
 
     def _submit_update(self, update: dict[str, Any]) -> None:
-        self._task_slots.acquire()
+        key = self.command_guard.admit(update, time.monotonic())
+        if key is None:
+            return
+        if not self._task_slots.acquire(blocking=False):
+            self.command_guard.finish(key)
+            return
+
+        def finished(_future: Future[Any]) -> None:
+            self.command_guard.finish(key)
+            self._task_slots.release()
+
         try:
             future = self.executor.submit(self._handle_update_safely, update)
         except Exception:
+            self.command_guard.finish(key)
             self._task_slots.release()
             raise
-        future.add_done_callback(lambda _: self._task_slots.release())
+        future.add_done_callback(finished)
 
     def _maybe_refresh_schedule(self, now_ts: float) -> None:
         interval = self.config.refresh_interval_minutes * 60
