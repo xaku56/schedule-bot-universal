@@ -4,6 +4,7 @@ import datetime as dt
 import hashlib
 import html
 import logging
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -126,6 +127,7 @@ class TelegramHandlers:
     def _send_teacher_search(
         self, chat_id: int, thread_id: int | None, query: str
     ) -> None:
+        query = re.sub(r"\s+", " ", query.strip())
         if not query:
             self.sender.send_message(
                 chat_id,
@@ -140,8 +142,23 @@ class TelegramHandlers:
             if needle in teacher_key(name)
         ]
         if not matches:
+            if re.fullmatch(
+                r"[А-ЯЁ][а-яё-]+\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.", query, re.IGNORECASE
+            ):
+                self.storage.set_binding(chat_id, thread_id, query, "teacher")
+                self.sender.send_message(
+                    chat_id,
+                    f"Преподаватель <b>{html.escape(query)}</b> привязан к этой теме. "
+                    "Имени нет в базовом PDF; замены будут найдены по точному ФИО из DOCX. "
+                    "Проверь: /date DD.MM.YYYY",
+                    thread_id,
+                )
+                return
             self.sender.send_message(
-                chat_id, "Преподаватель не найден в актуальном PDF.", thread_id
+                chat_id,
+                "Преподаватель не найден в актуальном PDF. Если он есть только в заменах, "
+                "введи полное ФИО с инициалами: /teacher Фамилия И.О.",
+                thread_id,
             )
             return
         if len(matches) > 20:
@@ -250,7 +267,7 @@ class TelegramHandlers:
                 chat_id,
                 "<b>Команды расписания</b>\n"
                 "/setup — выбрать группу или преподавателя для чата или темы.\n"
-                "/teacher Фамилия — найти и выбрать преподавателя.\n"
+                "/teacher Фамилия — найти и выбрать преподавателя; если он есть только в заменах, укажи Фамилия И.О.\n"
                 "/today — расписание на сегодня с опубликованными заменами.\n"
                 "/tomorrow — расписание на завтра с опубликованными заменами.\n"
                 "/date DD.MM.YYYY — расписание на дату, например /date 16.09.2026.\n"

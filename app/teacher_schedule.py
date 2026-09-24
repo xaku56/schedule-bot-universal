@@ -17,7 +17,7 @@ def teacher_names(value: str) -> list[str]:
     return [
         name.strip()
         for name in value.split("/")
-        if name.strip() and name.strip().casefold() != "нет"
+        if len(teacher_key(name)) > 1 and name.strip().casefold() != "нет"
     ]
 
 

@@ -26,6 +26,7 @@ from app.schedule_service import (
     week_type_for_date,
 )
 from app.storage import Storage
+from app.teacher_schedule import available_teachers
 
 
 class CoreTests(unittest.TestCase):
@@ -212,13 +213,21 @@ class ConfigTests(unittest.TestCase):
 class RealPdfTests(unittest.TestCase):
     def test_all_course_pdfs(self) -> None:
         root = Path(os.environ["SCHEDULE_PDF_DIR"])
-        expected_counts = {1: 23, 2: 23, 3: 20, 4: 16}
+        current = root / "1 курс 1 семестр 2026-2027.pdf"
+        if current.exists():
+            suffix = "1 семестр 2026-2027"
+            expected_counts = {1: 25, 2: 24, 3: 20, 4: 14}
+        else:
+            suffix = "2 семестр 2025-2026"
+            expected_counts = {1: 23, 2: 23, 3: 20, 4: 16}
         total = 0
+        all_groups = {}
         for course, expected in expected_counts.items():
-            path = root / f"{course} курс 2 семестр 2025-2026.pdf"
+            path = root / f"{course} курс {suffix}.pdf"
             parsed = parse_schedule_pdf(path, course)
             self.assertEqual(len(parsed), expected)
-            if course == 3:
+            all_groups.update(parsed)
+            if course == 3 and not current.exists():
                 tuesday = parsed["31 ис"]["days"]["вторник"]
                 numerator = {
                     item["pair"]: item["subject"] for item in tuesday["числитель"]
@@ -241,4 +250,9 @@ class RealPdfTests(unittest.TestCase):
                 }
                 self.assertTrue(warning_raw.issubset(preserved))
             total += len(parsed)
-        self.assertEqual(total, 82)
+        if current.exists():
+            self.assertEqual(total, 83)
+            cache = type("Cache", (), {"cache": {"groups": all_groups}})()
+            self.assertNotIn("Х", available_teachers(cache))
+        else:
+            self.assertEqual(total, 82)

@@ -15,7 +15,12 @@ from app.schedule_formatter import (
 )
 from app.schedule_service import ScheduleRepository
 from app.storage import Storage
-from app.teacher_schedule import available_teachers, schedule_for_teacher, teacher_key
+from app.teacher_schedule import (
+    available_teachers,
+    schedule_for_teacher,
+    teacher_key,
+    teacher_names,
+)
 from app.telegram_handlers import TelegramHandlers
 
 WEEK_START = dt.date(2026, 9, 21)
@@ -52,6 +57,7 @@ class TeacherScheduleTests(unittest.TestCase):
             self.assertEqual(
                 teacher_key(" Иванова И. И. "), teacher_key("Иванова И.И.")
             )
+            self.assertEqual(teacher_names("Х/Иванова И.И."), ["Иванова И.И."])
             self.assertIn("Сидоров С.С.", available_teachers(schedules))
             replacements = {
                 "11 ис": [
@@ -246,6 +252,31 @@ class TeacherIntegrationTests(unittest.TestCase):
             )
             handlers.handle_message({**message, "text": "/date 22.09.2026"})
             self.assertIn("Преподаватель: <b>Иванова", sender.messages[-1][0])
+            self.assertIn("13 ИС", sender.messages[-1][0])
+
+    def test_replacement_only_teacher_can_be_selected_by_full_name(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            schedules = repository(directory)
+            replacements = FakeReplacements()
+            replacements.by_group["13 ис"][0]["to"] = "Муканова К.Ш.(Биология)"
+            sender = FakeSender()
+            handlers = TelegramHandlers(
+                config=SimpleNamespace(numerator_week_start=WEEK_START),
+                storage=schedules.storage,
+                schedules=schedules,
+                replacements=replacements,
+                telegram=SimpleNamespace(answer_callback=lambda _id: None),
+                sender=sender,
+                timezone=dt.timezone.utc,
+                validate_semester=lambda: None,
+                status_text=lambda: "status",
+            )
+            message = {"chat": {"id": 1, "type": "private"}, "from": {"id": 1}}
+            handlers.handle_message({**message, "text": "/teacher Муканова К.Ш."})
+            self.assertEqual(
+                schedules.storage.get_binding(1, None)["target_name"], "Муканова К.Ш."
+            )
+            handlers.handle_message({**message, "text": "/date 22.09.2026"})
             self.assertIn("13 ИС", sender.messages[-1][0])
 
     def test_teacher_autopost_only_resends_on_own_change(self) -> None:
