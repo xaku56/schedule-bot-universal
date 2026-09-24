@@ -9,6 +9,7 @@ class FakeTelegramAPI:
     def __init__(self, fail: bool = False) -> None:
         self.fail = fail
         self.messages: list[tuple[int, str]] = []
+        self.edits: list[tuple[int, int, str]] = []
 
     def send_message(
         self,
@@ -20,6 +21,17 @@ class FakeTelegramAPI:
         if self.fail:
             raise RuntimeError("send failed")
         self.messages.append((chat_id, text))
+
+    def edit_message(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        reply_markup: dict | None = None,
+    ) -> None:
+        if self.fail:
+            raise RuntimeError("edit failed")
+        self.edits.append((chat_id, message_id, text))
 
 
 class TelegramQueueTests(unittest.TestCase):
@@ -50,3 +62,12 @@ class TelegramQueueTests(unittest.TestCase):
                 sender.send_message(1, "message")
         finally:
             sender.close()
+
+    def test_edit_message_uses_same_queue(self) -> None:
+        api = FakeTelegramAPI()
+        sender = TelegramSendQueue(api, messages_per_second=10000, per_chat_interval=0)
+        try:
+            sender.edit_message(1, 42, "updated")
+        finally:
+            sender.close()
+        self.assertEqual(api.edits, [(1, 42, "updated")])

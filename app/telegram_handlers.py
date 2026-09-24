@@ -139,7 +139,7 @@ class TelegramHandlers:
         return sorted(names.values(), key=lambda name: name.casefold())
 
     def _send_teacher_page(
-        self, chat_id: int, thread_id: int | None, page: int
+        self, chat_id: int, thread_id: int | None, message_id: int | None, page: int
     ) -> None:
         teachers = self._teachers()
         page_size = 12
@@ -170,12 +170,26 @@ class TelegramHandlers:
             )
         if navigation:
             rows.append(navigation)
-        self.sender.send_message(
+        self._update_setup_message(
             chat_id,
-            f"Выбери преподавателя · страница {page + 1}/{page_count}:",
             thread_id,
+            message_id,
+            f"Выбери преподавателя · страница {page + 1}/{page_count}:",
             {"inline_keyboard": rows},
         )
+
+    def _update_setup_message(
+        self,
+        chat_id: int,
+        thread_id: int | None,
+        message_id: int | None,
+        text: str,
+        keyboard: dict[str, Any] | None = None,
+    ) -> None:
+        if message_id is None:
+            self.sender.send_message(chat_id, text, thread_id, keyboard)
+        else:
+            self.sender.edit_message(chat_id, message_id, text, keyboard)
 
     def _schedule(
         self,
@@ -380,6 +394,7 @@ class TelegramHandlers:
         chat_id = int(chat["id"])
         user = callback.get("from") or {}
         thread_id = message.get("message_thread_id")
+        message_id = message.get("message_id")
         data = str(callback.get("data", ""))
 
         if not self.can_manage(chat, user):
@@ -387,23 +402,31 @@ class TelegramHandlers:
             return
 
         if data == "setup:teacher":
-            self._send_teacher_page(chat_id, thread_id, 0)
+            self._send_teacher_page(chat_id, thread_id, message_id, 0)
             return
         if data.startswith("teachers:"):
             try:
                 page = int(data.split(":", 1)[1])
             except ValueError:
                 page = -1
-            self._send_teacher_page(chat_id, thread_id, page)
+            self._send_teacher_page(chat_id, thread_id, message_id, page)
             return
         if data == "setup:groups":
-            self.sender.send_message(
-                chat_id, "Выбери курс, затем группу:", thread_id, _course_keyboard()
+            self._update_setup_message(
+                chat_id,
+                thread_id,
+                message_id,
+                "Выбери курс, затем группу:",
+                _course_keyboard(),
             )
             return
         if data == "courses":
-            self.sender.send_message(
-                chat_id, "Выбери курс, затем группу:", thread_id, _course_keyboard()
+            self._update_setup_message(
+                chat_id,
+                thread_id,
+                message_id,
+                "Выбери курс, затем группу:",
+                _course_keyboard(),
             )
             return
         if data.startswith("course:"):
@@ -418,10 +441,11 @@ class TelegramHandlers:
                 )
                 return
             groups = self.schedules.groups(course)
-            self.sender.send_message(
+            self._update_setup_message(
                 chat_id,
-                f"Выбери группу {course} курса:",
                 thread_id,
+                message_id,
+                f"Выбери группу {course} курса:",
                 _groups_keyboard(groups),
             )
             return

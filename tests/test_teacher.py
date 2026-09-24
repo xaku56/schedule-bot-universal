@@ -221,6 +221,7 @@ class FakeReplacements:
 class FakeSender:
     def __init__(self) -> None:
         self.messages: list[tuple[str, dict | None]] = []
+        self.edits: list[tuple[int, str, dict | None]] = []
 
     def send_message(
         self,
@@ -232,8 +233,59 @@ class FakeSender:
     ) -> None:
         self.messages.append((text, keyboard))
 
+    def edit_message(
+        self,
+        _chat_id: int,
+        message_id: int,
+        text: str,
+        keyboard: dict | None = None,
+    ) -> None:
+        self.edits.append((message_id, text, keyboard))
+
 
 class TeacherIntegrationTests(unittest.TestCase):
+    def test_setup_course_and_teacher_pages_edit_the_original_message(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            schedules = repository(directory)
+            replacements = FakeReplacements()
+            replacements.recent_teachers = lambda: [
+                f"Тестов{index:02} А.А." for index in range(20)
+            ]
+            sender = FakeSender()
+            handlers = TelegramHandlers(
+                config=SimpleNamespace(numerator_week_start=WEEK_START),
+                storage=schedules.storage,
+                schedules=schedules,
+                replacements=replacements,
+                telegram=SimpleNamespace(answer_callback=lambda _id: None),
+                sender=sender,
+                timezone=dt.timezone.utc,
+                validate_semester=lambda: None,
+                status_text=lambda: "status",
+            )
+            message = {
+                "chat": {"id": 1, "type": "private"},
+                "from": {"id": 1},
+                "message_id": 42,
+            }
+            handlers.handle_message({**message, "text": "/setup"})
+            for data in (
+                "setup:groups",
+                "course:1",
+                "courses",
+                "setup:teacher",
+                "teachers:1",
+                "teachers:0",
+            ):
+                handlers.handle_callback(
+                    {"id": data, "data": data, "message": message, "from": {"id": 1}}
+                )
+            self.assertEqual(len(sender.messages), 1)
+            self.assertEqual([edit[0] for edit in sender.edits], [42] * 6)
+            self.assertIn("группу 1 курса", sender.edits[1][1])
+            self.assertIn("страница 2/2", sender.edits[4][1])
+            self.assertIn("страница 1/2", sender.edits[5][1])
+
     def test_button_bind_and_request_date(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             schedules = repository(directory)

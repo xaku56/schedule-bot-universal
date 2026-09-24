@@ -23,6 +23,7 @@ class _QueuedMessage:
     thread_id: int | None = field(compare=False)
     reply_markup: dict[str, Any] | None = field(compare=False)
     result: Future[None] = field(compare=False)
+    message_id: int | None = field(default=None, compare=False)
     stop: bool = field(default=False, compare=False)
 
 
@@ -89,6 +90,33 @@ class TelegramSendQueue:
         if delay:
             time.sleep(delay)
 
+    def edit_message(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+        *,
+        priority: int = 0,
+    ) -> None:
+        if self._closed.is_set():
+            raise RuntimeError("Telegram send queue is closed")
+        result: Future[None] = Future()
+        self._queue.put(
+            _QueuedMessage(
+                priority=priority,
+                sequence=next(self._sequence),
+                chat_id=chat_id,
+                text=text,
+                thread_id=None,
+                reply_markup=reply_markup,
+                result=result,
+                message_id=message_id,
+            ),
+            timeout=10,
+        )
+        result.result()
+
     def _run(self) -> None:
         while True:
             item = self._queue.get()
@@ -97,12 +125,20 @@ class TelegramSendQueue:
                     item.result.set_result(None)
                     return
                 self._rate_limit(item.chat_id)
-                self.api.send_message(
-                    item.chat_id,
-                    item.text,
-                    item.thread_id,
-                    item.reply_markup,
-                )
+                if item.message_id is None:
+                    self.api.send_message(
+                        item.chat_id,
+                        item.text,
+                        item.thread_id,
+                        item.reply_markup,
+                    )
+                else:
+                    self.api.edit_message(
+                        item.chat_id,
+                        item.message_id,
+                        item.text,
+                        item.reply_markup,
+                    )
                 sent_at = time.monotonic()
                 self._last_global_send = sent_at
                 self._last_chat_send[item.chat_id] = sent_at

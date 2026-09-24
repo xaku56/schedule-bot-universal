@@ -97,6 +97,23 @@ class TelegramAPI:
             reply_markup=reply_markup,
         )
 
+    def edit_message(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> None:
+        self.request(
+            "editMessageText",
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            parse_mode="HTML",
+            disable_web_page_preview="true",
+            reply_markup=reply_markup,
+        )
+
     def answer_callback(self, callback_id: str, text: str = "") -> None:
         self.request("answerCallbackQuery", callback_query_id=callback_id, text=text)
 
