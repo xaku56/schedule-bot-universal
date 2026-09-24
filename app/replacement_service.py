@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import io
+import logging
 import re
 import threading
 import zipfile
@@ -19,6 +20,7 @@ ROMAN_PAIRS = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "VII": 7}
 MAX_DOCX_ENTRIES = 2048
 MAX_DOCX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
 MAX_DOCUMENT_XML_BYTES = 20 * 1024 * 1024
+logger = logging.getLogger(__name__)
 
 
 def _node_text(node: ET.Element) -> str:
@@ -208,6 +210,33 @@ class ReplacementRepository:
                 return existing
             parsed = parse_replacements_all(self.document(item))
             return self._remember(self._parsed_documents, fingerprint, parsed)
+
+    def recent_teachers(self, limit: int = 7) -> list[str]:
+        files = sorted(
+            (
+                item
+                for item in self.refresh_files()
+                if str(item.get("name", "")).casefold().endswith(".docx")
+            ),
+            key=lambda item: str(item.get("modified", "")),
+            reverse=True,
+        )[:limit]
+        names: list[str] = []
+        for item in files:
+            try:
+                groups = self.replacements_for_item(item)
+            except Exception:
+                logger.exception(
+                    "Could not inspect replacement teachers in %s", item.get("name")
+                )
+                continue
+            for rows in groups.values():
+                for row in rows:
+                    for field in ("from", "to"):
+                        teacher, _ = _replacement_lesson(row[field])
+                        if teacher:
+                            names.append(teacher)
+        return names
 
     def apply_for_date(
         self, schedule: dict[str, Any], target_date: dt.date

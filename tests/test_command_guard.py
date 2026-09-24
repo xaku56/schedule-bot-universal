@@ -45,7 +45,15 @@ class CommandGuardTests(unittest.TestCase):
         guard = CommandGuard()
         key = guard.admit(message("/setup"), 0)
         guard.finish(key)
-        for data in ("course:1", "group:11 ис"):
+        for index, data in enumerate(
+            (
+                "course:1",
+                "group:11 ис",
+                "setup:teacher",
+                "teachers:1",
+                "teacher:1234567890abcdef",
+            )
+        ):
             update = {
                 "callback_query": {
                     "id": data,
@@ -54,15 +62,21 @@ class CommandGuardTests(unittest.TestCase):
                     "message": {"chat": {"id": 1}},
                 }
             }
-            key = guard.admit(update, 0)
+            key = guard.admit(update, index * 2)
             self.assertIsNotNone(key)
             guard.finish(key)
         for _ in range(100):
-            self.assertIsNone(guard.admit(update, 0))
+            self.assertIsNone(guard.admit(update, 8))
 
     def test_unknown_commands_are_ignored_and_old_entries_expire(self) -> None:
         guard = CommandGuard()
-        for text in ("hello", "/refresh", "/refresh force", "/unknown"):
+        for text in (
+            "hello",
+            "/refresh",
+            "/refresh force",
+            "/teacher Иванова",
+            "/unknown",
+        ):
             self.assertIsNone(guard.admit(message(text), 0))
         key = guard.admit(message("/help"), 0)
         guard.finish(key)

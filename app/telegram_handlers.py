@@ -4,7 +4,6 @@ import datetime as dt
 import hashlib
 import html
 import logging
-import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -20,7 +19,12 @@ from .schedule_formatter import (
 )
 from .schedule_service import ScheduleRepository, parse_flexible_date
 from .storage import Storage
-from .teacher_schedule import available_teachers, schedule_for_teacher, teacher_key
+from .teacher_schedule import (
+    available_teachers,
+    schedule_for_teacher,
+    teacher_key,
+    teacher_names,
+)
 from .telegram_api import TelegramAPI
 from .telegram_queue import TelegramSendQueue
 
@@ -124,63 +128,54 @@ class TelegramHandlers:
             },
         )
 
-    def _send_teacher_search(
-        self, chat_id: int, thread_id: int | None, query: str
+    def _teachers(self) -> list[str]:
+        names = {teacher_key(name): name for name in available_teachers(self.schedules)}
+        try:
+            for value in self.replacements.recent_teachers():
+                for name in teacher_names(value):
+                    names.setdefault(teacher_key(name), name)
+        except Exception:
+            logger.exception("Could not list replacement teachers")
+        return sorted(names.values(), key=lambda name: name.casefold())
+
+    def _send_teacher_page(
+        self, chat_id: int, thread_id: int | None, page: int
     ) -> None:
-        query = re.sub(r"\s+", " ", query.strip())
-        if not query:
+        teachers = self._teachers()
+        page_size = 12
+        page_count = (len(teachers) + page_size - 1) // page_size
+        if not 0 <= page < page_count:
             self.sender.send_message(
-                chat_id,
-                "Напиши /teacher Фамилия, например /teacher Иванова.",
-                thread_id,
+                chat_id, "Список преподавателей недоступен.", thread_id
             )
             return
-        needle = teacher_key(query)
-        matches = [
-            name
-            for name in available_teachers(self.schedules)
-            if needle in teacher_key(name)
-        ]
-        if not matches:
-            if re.fullmatch(
-                r"[А-ЯЁ][а-яё-]+\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.", query, re.IGNORECASE
-            ):
-                self.storage.set_binding(chat_id, thread_id, query, "teacher")
-                self.sender.send_message(
-                    chat_id,
-                    f"Преподаватель <b>{html.escape(query)}</b> привязан к этой теме. "
-                    "Имени нет в базовом PDF; замены будут найдены по точному ФИО из DOCX. "
-                    "Проверь: /date DD.MM.YYYY",
-                    thread_id,
-                )
-                return
-            self.sender.send_message(
-                chat_id,
-                "Преподаватель не найден в актуальном PDF. Если он есть только в заменах, "
-                "введи полное ФИО с инициалами: /teacher Фамилия И.О.",
-                thread_id,
-            )
-            return
-        if len(matches) > 20:
-            self.sender.send_message(
-                chat_id,
-                "Найдено слишком много преподавателей. Уточни фамилию или инициалы.",
-                thread_id,
-            )
-            return
-        keyboard = {
-            "inline_keyboard": [
-                [
-                    {
-                        "text": name,
-                        "callback_data": "teacher:"
-                        + hashlib.sha256(teacher_key(name).encode()).hexdigest()[:16],
-                    }
-                ]
-                for name in matches
+        rows = [
+            [
+                {
+                    "text": name,
+                    "callback_data": "teacher:"
+                    + hashlib.sha256(teacher_key(name).encode()).hexdigest()[:16],
+                }
             ]
-        }
-        self.sender.send_message(chat_id, "Выбери преподавателя:", thread_id, keyboard)
+            for name in teachers[page * page_size : (page + 1) * page_size]
+        ]
+        navigation = []
+        if page > 0:
+            navigation.append(
+                {"text": "← Назад", "callback_data": f"teachers:{page - 1}"}
+            )
+        if page + 1 < page_count:
+            navigation.append(
+                {"text": "Далее →", "callback_data": f"teachers:{page + 1}"}
+            )
+        if navigation:
+            rows.append(navigation)
+        self.sender.send_message(
+            chat_id,
+            f"Выбери преподавателя · страница {page + 1}/{page_count}:",
+            thread_id,
+            {"inline_keyboard": rows},
+        )
 
     def _schedule(
         self,
@@ -267,7 +262,6 @@ class TelegramHandlers:
                 chat_id,
                 "<b>Команды расписания</b>\n"
                 "/setup — выбрать группу или преподавателя для чата или темы.\n"
-                "/teacher Фамилия — найти и выбрать преподавателя; если он есть только в заменах, укажи Фамилия И.О.\n"
                 "/today — расписание на сегодня с опубликованными заменами.\n"
                 "/tomorrow — расписание на завтра с опубликованными заменами.\n"
                 "/date DD.MM.YYYY — расписание на дату, например /date 16.09.2026.\n"
@@ -298,13 +292,6 @@ class TelegramHandlers:
                 return
             self._send_setup(chat_id, thread_id)
             return
-        if command == "/teacher":
-            if not self.can_manage(chat, user):
-                self._deny_management(chat_id, thread_id)
-                return
-            self._send_teacher_search(chat_id, thread_id, argument)
-            return
-
         binding = self.storage.get_binding(chat_id, thread_id)
         if not binding:
             self._send_setup(chat_id, thread_id)
@@ -400,7 +387,14 @@ class TelegramHandlers:
             return
 
         if data == "setup:teacher":
-            self._send_teacher_search(chat_id, thread_id, "")
+            self._send_teacher_page(chat_id, thread_id, 0)
+            return
+        if data.startswith("teachers:"):
+            try:
+                page = int(data.split(":", 1)[1])
+            except ValueError:
+                page = -1
+            self._send_teacher_page(chat_id, thread_id, page)
             return
         if data == "setup:groups":
             self.sender.send_message(
@@ -452,7 +446,7 @@ class TelegramHandlers:
             teacher = next(
                 (
                     name
-                    for name in available_teachers(self.schedules)
+                    for name in self._teachers()
                     if hashlib.sha256(teacher_key(name).encode()).hexdigest()[:16]
                     == token
                 ),
@@ -460,7 +454,7 @@ class TelegramHandlers:
             )
             if teacher is None:
                 self.sender.send_message(
-                    chat_id, "Преподаватель не найден в актуальном PDF.", thread_id
+                    chat_id, "Преподавателя нет в актуальном списке.", thread_id
                 )
                 return
             self.storage.set_binding(chat_id, thread_id, teacher, "teacher")

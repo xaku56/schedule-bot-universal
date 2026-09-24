@@ -9,7 +9,6 @@ COMMANDS = {
     "/setup",
     "/group",
     "/groups",
-    "/teacher",
     "/status",
     "/today",
     "/tomorrow",
@@ -46,7 +45,9 @@ class CommandGuard:
                 "refresh",
                 "setup:groups",
                 "setup:teacher",
-            } and not argument.startswith(("course:", "group:", "teacher:")):
+            } and not argument.startswith(
+                ("course:", "group:", "teacher:", "teachers:")
+            ):
                 return None
         else:
             parts = str(message.get("text", "")).strip().split(maxsplit=1)
@@ -55,11 +56,7 @@ class CommandGuard:
             command = parts[0].split("@", 1)[0].casefold()
             if command not in COMMANDS:
                 return None
-            argument = (
-                parts[1].strip()
-                if command in {"/date", "/teacher"} and len(parts) > 1
-                else ""
-            )
+            argument = parts[1].strip() if command == "/date" and len(parts) > 1 else ""
         request = (chat_id, message.get("message_thread_id") or 0, command, argument)
         recent_key = (user_id, *request)
         active_key = request if command in SCHEDULE_COMMANDS else recent_key

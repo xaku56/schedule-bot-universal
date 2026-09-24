@@ -209,6 +209,14 @@ class FakeReplacements:
     def replacements_for_item(self, _item: dict) -> dict:
         return self.by_group
 
+    def recent_teachers(self) -> list[str]:
+        return [
+            row["to"].split("(", 1)[0]
+            for rows in self.by_group.values()
+            for row in rows
+            if "(" in row["to"]
+        ]
+
 
 class FakeSender:
     def __init__(self) -> None:
@@ -226,7 +234,7 @@ class FakeSender:
 
 
 class TeacherIntegrationTests(unittest.TestCase):
-    def test_search_bind_and_request_date(self) -> None:
+    def test_button_bind_and_request_date(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             schedules = repository(directory)
             sender = FakeSender()
@@ -243,7 +251,23 @@ class TeacherIntegrationTests(unittest.TestCase):
             )
             message = {"chat": {"id": 1, "type": "private"}, "from": {"id": 1}}
             handlers.handle_message({**message, "text": "/teacher Иванова"})
-            token = sender.messages[-1][1]["inline_keyboard"][0][0]["callback_data"]
+            self.assertEqual(sender.messages, [])
+            handlers.handle_message({**message, "text": "/setup"})
+            handlers.handle_callback(
+                {
+                    "id": "1",
+                    "data": "setup:teacher",
+                    "message": message,
+                    "from": {"id": 1},
+                }
+            )
+            buttons = sender.messages[-1][1]["inline_keyboard"]
+            token = next(
+                button["callback_data"]
+                for row in buttons
+                for button in row
+                if button["text"].startswith("Иванова")
+            )
             handlers.handle_callback(
                 {"id": "1", "data": token, "message": message, "from": {"id": 1}}
             )
@@ -254,7 +278,7 @@ class TeacherIntegrationTests(unittest.TestCase):
             self.assertIn("Преподаватель: <b>Иванова", sender.messages[-1][0])
             self.assertIn("13 ИС", sender.messages[-1][0])
 
-    def test_replacement_only_teacher_can_be_selected_by_full_name(self) -> None:
+    def test_replacement_only_teacher_can_be_selected_by_button(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             schedules = repository(directory)
             replacements = FakeReplacements()
@@ -272,12 +296,55 @@ class TeacherIntegrationTests(unittest.TestCase):
                 status_text=lambda: "status",
             )
             message = {"chat": {"id": 1, "type": "private"}, "from": {"id": 1}}
-            handlers.handle_message({**message, "text": "/teacher Муканова К.Ш."})
+            handlers.handle_callback(
+                {
+                    "id": "1",
+                    "data": "setup:teacher",
+                    "message": message,
+                    "from": {"id": 1},
+                }
+            )
+            token = next(
+                button["callback_data"]
+                for row in sender.messages[-1][1]["inline_keyboard"]
+                for button in row
+                if button["text"] == "Муканова К.Ш."
+            )
+            handlers.handle_callback(
+                {"id": "2", "data": token, "message": message, "from": {"id": 1}}
+            )
             self.assertEqual(
                 schedules.storage.get_binding(1, None)["target_name"], "Муканова К.Ш."
             )
             handlers.handle_message({**message, "text": "/date 22.09.2026"})
             self.assertIn("13 ИС", sender.messages[-1][0])
+
+    def test_teacher_buttons_are_paginated_and_unknown_name_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            schedules = repository(directory)
+            replacements = FakeReplacements()
+            replacements.recent_teachers = lambda: [
+                f"Тестов{index:02} А.А." for index in range(20)
+            ]
+            sender = FakeSender()
+            handlers = TelegramHandlers(
+                config=SimpleNamespace(numerator_week_start=WEEK_START),
+                storage=schedules.storage,
+                schedules=schedules,
+                replacements=replacements,
+                telegram=SimpleNamespace(answer_callback=lambda _id: None),
+                sender=sender,
+                timezone=dt.timezone.utc,
+                validate_semester=lambda: None,
+                status_text=lambda: "status",
+            )
+            message = {"chat": {"id": 1, "type": "private"}, "from": {"id": 1}}
+            for token in ("setup:teacher", "teachers:1", "teacher:0000000000000000"):
+                handlers.handle_callback(
+                    {"id": token, "data": token, "message": message, "from": {"id": 1}}
+                )
+            self.assertIn("страница 2/2", sender.messages[-2][0])
+            self.assertIsNone(schedules.storage.get_binding(1, None))
 
     def test_teacher_autopost_only_resends_on_own_change(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
