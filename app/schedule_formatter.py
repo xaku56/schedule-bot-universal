@@ -96,3 +96,76 @@ def format_weekday_schedule(
         else:
             lines.extend([f"Ч: {numerator_detail}", f"З: {denominator_detail}"])
     return "\n".join(lines)
+
+
+def _teacher_detail(lesson: dict[str, Any]) -> str:
+    group = html.escape(str(lesson["group"]).upper())
+    subject = html.escape(str(lesson.get("subject") or lesson.get("raw") or ""))
+    room = html.escape(str(lesson.get("room", "")))
+    detail = f"{group} — {subject}"
+    if room and room != "-":
+        detail += f" — {room}"
+    if lesson.get("status") in {"replaced", "replacement_only"}:
+        detail += " / <b>ЗАМЕНА</b>"
+    if lesson.get("parse_warning"):
+        detail += " / ⚠️ <i>проверьте исходный PDF</i>"
+    return detail
+
+
+def format_teacher_schedule(schedule: dict[str, Any], note: str | None = None) -> str:
+    target_date = dt.date.fromisoformat(schedule["date"])
+    weekday = WEEKDAY_ACCUSATIVE.get(schedule["weekday"], schedule["weekday"])
+    lines = [
+        f"<b>Расписание на {html.escape(weekday)} {target_date.day} {MONTHS[target_date.month]}</b>",
+        f"Преподаватель: <b>{html.escape(schedule['teacher'])}</b> · {html.escape(schedule['week_type'])}",
+    ]
+    if not schedule["pairs"]:
+        lines.extend(["", "Пар нет"])
+    for lesson in schedule["pairs"]:
+        pair = int(lesson["pair"])
+        lines.extend(
+            ["", f"<b>{pair}) {PAIR_TIMES_DISPLAY[pair]}</b>", _teacher_detail(lesson)]
+        )
+    if schedule["changes"]:
+        lines.extend(["", "<b>Снятые и отменённые пары</b>"])
+        for lesson in schedule["changes"]:
+            pair = int(lesson["pair"])
+            status = (
+                "ОТМЕНА" if lesson["status"] == "cancelled" else "ЗАМЕНА ПРЕПОДАВАТЕЛЯ"
+            )
+            lines.append(f"{pair}) {_teacher_detail(lesson)} / <b>{status}</b>")
+    if note:
+        lines.extend(["", html.escape(note)])
+    return "\n".join(lines)
+
+
+def format_teacher_weekday_schedule(
+    teacher: str,
+    weekday: str,
+    numerator_pairs: list[dict[str, Any]],
+    denominator_pairs: list[dict[str, Any]],
+) -> str:
+    def by_pair(lessons: list[dict[str, Any]]) -> dict[int, list[str]]:
+        result: dict[int, list[str]] = {}
+        for lesson in lessons:
+            result.setdefault(int(lesson["pair"]), []).append(_teacher_detail(lesson))
+        return result
+
+    numerator = by_pair(numerator_pairs)
+    denominator = by_pair(denominator_pairs)
+    lines = [
+        f"<b>{html.escape(weekday.capitalize())}</b>",
+        f"Преподаватель: <b>{html.escape(teacher)}</b>",
+    ]
+    pair_numbers = sorted(numerator.keys() | denominator.keys())
+    if not pair_numbers:
+        lines.extend(["", "Пар нет"])
+    for pair in pair_numbers:
+        first = "; ".join(numerator.get(pair, [])) or "—"
+        second = "; ".join(denominator.get(pair, [])) or "—"
+        lines.extend(["", f"<b>{pair}) {PAIR_TIMES_DISPLAY[pair]}</b>"])
+        if first == second:
+            lines.append(first)
+        else:
+            lines.extend([f"Ч: {first}", f"З: {second}"])
+    return "\n".join(lines)

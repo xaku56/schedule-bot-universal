@@ -37,7 +37,8 @@ class Storage:
                 CREATE TABLE IF NOT EXISTS bindings (
                     chat_id INTEGER NOT NULL,
                     thread_id INTEGER NOT NULL DEFAULT 0,
-                    group_name TEXT NOT NULL,
+                    target_type TEXT NOT NULL DEFAULT 'group',
+                    target_name TEXT NOT NULL,
                     autopost INTEGER NOT NULL DEFAULT 0,
                     autopost_failures INTEGER NOT NULL DEFAULT 0,
                     autopost_last_error TEXT,
@@ -47,11 +48,12 @@ class Storage:
                 CREATE TABLE IF NOT EXISTS sent_autoposts (
                     chat_id INTEGER NOT NULL,
                     thread_id INTEGER NOT NULL DEFAULT 0,
-                    group_name TEXT NOT NULL,
+                    target_type TEXT NOT NULL DEFAULT 'group',
+                    target_name TEXT NOT NULL,
                     target_date TEXT NOT NULL,
                     fingerprint TEXT NOT NULL,
                     sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (chat_id, thread_id, group_name, target_date)
+                    PRIMARY KEY (chat_id, thread_id, target_type, target_name, target_date)
                 );
                 """
             )
@@ -59,12 +61,53 @@ class Storage:
                 db, "bindings", "autopost_failures", "INTEGER NOT NULL DEFAULT 0"
             )
             self._ensure_column(db, "bindings", "autopost_last_error", "TEXT")
+            if "group_name" in self._columns(db, "bindings"):
+                db.execute("ALTER TABLE bindings RENAME TO old_bindings")
+                db.execute("""
+                    CREATE TABLE bindings (
+                        chat_id INTEGER NOT NULL, thread_id INTEGER NOT NULL DEFAULT 0,
+                        target_type TEXT NOT NULL DEFAULT 'group', target_name TEXT NOT NULL,
+                        autopost INTEGER NOT NULL DEFAULT 0,
+                        autopost_failures INTEGER NOT NULL DEFAULT 0,
+                        autopost_last_error TEXT,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (chat_id, thread_id)
+                    )
+                """)
+                db.execute("""
+                    INSERT INTO bindings
+                    SELECT chat_id, thread_id, 'group', group_name, autopost,
+                           autopost_failures, autopost_last_error, updated_at
+                    FROM old_bindings
+                """)
+                db.execute("DROP TABLE old_bindings")
+            if "group_name" in self._columns(db, "sent_autoposts"):
+                db.execute("ALTER TABLE sent_autoposts RENAME TO old_sent_autoposts")
+                db.execute("""
+                    CREATE TABLE sent_autoposts (
+                        chat_id INTEGER NOT NULL, thread_id INTEGER NOT NULL DEFAULT 0,
+                        target_type TEXT NOT NULL DEFAULT 'group', target_name TEXT NOT NULL,
+                        target_date TEXT NOT NULL, fingerprint TEXT NOT NULL,
+                        sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (chat_id, thread_id, target_type, target_name, target_date)
+                    )
+                """)
+                db.execute("""
+                    INSERT INTO sent_autoposts
+                    SELECT chat_id, thread_id, 'group', group_name, target_date,
+                           fingerprint, sent_at FROM old_sent_autoposts
+                """)
+                db.execute("DROP TABLE old_sent_autoposts")
+
+    @staticmethod
+    def _columns(db: sqlite3.Connection, table: str) -> set[str]:
+        return {str(row[1]) for row in db.execute(f"PRAGMA table_info({table})")}
 
     @staticmethod
     def _ensure_column(
         db: sqlite3.Connection, table: str, column: str, declaration: str
     ) -> None:
-        columns = {str(row[1]) for row in db.execute(f"PRAGMA table_info({table})")}
+        columns = Storage._columns(db, table)
         if column not in columns:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
@@ -85,17 +128,20 @@ class Storage:
             json.dump(cache, file, ensure_ascii=False, indent=2)
         temporary.replace(self.cache_path)
 
-    def set_binding(self, chat_id: int, thread_id: int | None, group: str) -> None:
+    def set_binding(
+        self, chat_id: int, thread_id: int | None, name: str, target_type: str = "group"
+    ) -> None:
         with self.connect() as db:
             db.execute(
                 """
-                INSERT INTO bindings(chat_id, thread_id, group_name)
-                VALUES (?, ?, ?)
+                INSERT INTO bindings(chat_id, thread_id, target_type, target_name)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(chat_id, thread_id) DO UPDATE SET
-                    group_name=excluded.group_name,
+                    target_type=excluded.target_type,
+                    target_name=excluded.target_name,
                     updated_at=CURRENT_TIMESTAMP
                 """,
-                (chat_id, thread_id or 0, group),
+                (chat_id, thread_id or 0, target_type, name),
             )
 
     def get_binding(self, chat_id: int, thread_id: int | None) -> sqlite3.Row | None:
@@ -125,15 +171,21 @@ class Storage:
             return db.execute("SELECT * FROM bindings WHERE autopost=1").fetchall()
 
     def autopost_fingerprint(
-        self, chat_id: int, thread_id: int, group: str, target_date: str
+        self,
+        chat_id: int,
+        thread_id: int,
+        name: str,
+        target_date: str,
+        target_type: str = "group",
     ) -> str | None:
         with self.connect() as db:
             row = db.execute(
                 """
                 SELECT fingerprint FROM sent_autoposts
-                WHERE chat_id=? AND thread_id=? AND group_name=? AND target_date=?
+                WHERE chat_id=? AND thread_id=? AND target_type=?
+                  AND target_name=? AND target_date=?
                 """,
-                (chat_id, thread_id, group, target_date),
+                (chat_id, thread_id, target_type, name, target_date),
             ).fetchone()
             return str(row[0]) if row else None
 
@@ -141,20 +193,21 @@ class Storage:
         self,
         chat_id: int,
         thread_id: int,
-        group: str,
+        name: str,
         target_date: str,
         fingerprint: str,
+        target_type: str = "group",
     ) -> None:
         with self.connect() as db:
             db.execute(
                 """
-                INSERT INTO sent_autoposts(chat_id, thread_id, group_name, target_date, fingerprint)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(chat_id, thread_id, group_name, target_date) DO UPDATE SET
+                INSERT INTO sent_autoposts(chat_id, thread_id, target_type, target_name, target_date, fingerprint)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id, thread_id, target_type, target_name, target_date) DO UPDATE SET
                     fingerprint=excluded.fingerprint,
                     sent_at=CURRENT_TIMESTAMP
                 """,
-                (chat_id, thread_id, group, target_date, fingerprint),
+                (chat_id, thread_id, target_type, name, target_date, fingerprint),
             )
 
     def record_autopost_success(self, chat_id: int, thread_id: int) -> None:

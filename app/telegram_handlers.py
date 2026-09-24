@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import html
 import logging
 import time
@@ -10,9 +11,15 @@ from typing import Any
 from .command_guard import COMMANDS
 from .config import Config
 from .replacement_service import ReplacementRepository
-from .schedule_formatter import format_schedule, format_weekday_schedule
+from .schedule_formatter import (
+    format_schedule,
+    format_teacher_schedule,
+    format_teacher_weekday_schedule,
+    format_weekday_schedule,
+)
 from .schedule_service import ScheduleRepository, parse_flexible_date
 from .storage import Storage
+from .teacher_schedule import available_teachers, schedule_for_teacher, teacher_key
 from .telegram_api import TelegramAPI
 from .telegram_queue import TelegramSendQueue
 
@@ -91,32 +98,104 @@ class TelegramHandlers:
     def _deny_management(self, chat_id: int, thread_id: int | None) -> None:
         self.sender.send_message(
             chat_id,
-            "Менять группу, автоотправку и источники могут только администраторы чата.",
+            "Менять группу или преподавателя и автоотправку могут только администраторы чата.",
             thread_id,
         )
 
     def _binding_group(self, chat_id: int, thread_id: int | None) -> str | None:
         row = self.storage.get_binding(chat_id, thread_id)
-        return str(row["group_name"]) if row else None
+        return (
+            str(row["target_name"]) if row and row["target_type"] == "group" else None
+        )
 
     def _send_setup(self, chat_id: int, thread_id: int | None) -> None:
         self.sender.send_message(
             chat_id,
-            "Выбери курс, затем группу. В чате с темами настройку нужно выполнять прямо в нужной теме.",
+            "Выбери группу или преподавателя. В чате с темами настройку нужно выполнять прямо в нужной теме.",
             thread_id,
-            _course_keyboard(),
+            {
+                "inline_keyboard": [
+                    [
+                        {"text": "Группа", "callback_data": "setup:groups"},
+                        {"text": "Преподаватель", "callback_data": "setup:teacher"},
+                    ]
+                ]
+            },
         )
+
+    def _send_teacher_search(
+        self, chat_id: int, thread_id: int | None, query: str
+    ) -> None:
+        if not query:
+            self.sender.send_message(
+                chat_id,
+                "Напиши /teacher Фамилия, например /teacher Иванова.",
+                thread_id,
+            )
+            return
+        needle = teacher_key(query)
+        matches = [
+            name
+            for name in available_teachers(self.schedules)
+            if needle in teacher_key(name)
+        ]
+        if not matches:
+            self.sender.send_message(
+                chat_id, "Преподаватель не найден в актуальном PDF.", thread_id
+            )
+            return
+        if len(matches) > 20:
+            self.sender.send_message(
+                chat_id,
+                "Найдено слишком много преподавателей. Уточни фамилию или инициалы.",
+                thread_id,
+            )
+            return
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": name,
+                        "callback_data": "teacher:"
+                        + hashlib.sha256(teacher_key(name).encode()).hexdigest()[:16],
+                    }
+                ]
+                for name in matches
+            ]
+        }
+        self.sender.send_message(chat_id, "Выбери преподавателя:", thread_id, keyboard)
 
     def _schedule(
         self,
-        group: str,
+        name: str,
         target_date: dt.date,
         *,
+        target_type: str = "group",
         include_replacements: bool = True,
     ) -> tuple[dict[str, Any], str | None]:
         self.validate_semester()
+        if target_type == "teacher":
+            item = (
+                self.replacements.find_for_date(target_date)
+                if include_replacements
+                else None
+            )
+            by_group = self.replacements.replacements_for_item(item) if item else None
+            schedule = schedule_for_teacher(
+                self.schedules,
+                name,
+                target_date,
+                self.config.numerator_week_start,
+                by_group,
+            )
+            note = (
+                "Файл замен на эту дату не найден — показано базовое расписание."
+                if include_replacements and not item
+                else None
+            )
+            return schedule, note
         base = self.schedules.schedule_for(
-            group, target_date, self.config.numerator_week_start
+            name, target_date, self.config.numerator_week_start
         )
         if not include_replacements:
             return base, None
@@ -132,15 +211,24 @@ class TelegramHandlers:
         self,
         chat_id: int,
         thread_id: int | None,
-        group: str,
+        name: str,
         target_date: dt.date,
         *,
+        target_type: str = "group",
         include_replacements: bool = True,
     ) -> None:
         schedule, note = self._schedule(
-            group, target_date, include_replacements=include_replacements
+            name,
+            target_date,
+            target_type=target_type,
+            include_replacements=include_replacements,
         )
-        self.sender.send_message(chat_id, format_schedule(schedule, note), thread_id)
+        message = (
+            format_teacher_schedule(schedule, note)
+            if target_type == "teacher"
+            else format_schedule(schedule, note)
+        )
+        self.sender.send_message(chat_id, message, thread_id)
 
     def handle_message(self, message: dict[str, Any]) -> None:
         chat = message.get("chat") or {}
@@ -161,7 +249,8 @@ class TelegramHandlers:
             self.sender.send_message(
                 chat_id,
                 "<b>Команды расписания</b>\n"
-                "/setup — выбрать группу для личного чата или текущей темы.\n"
+                "/setup — выбрать группу или преподавателя для чата или темы.\n"
+                "/teacher Фамилия — найти и выбрать преподавателя.\n"
                 "/today — расписание на сегодня с опубликованными заменами.\n"
                 "/tomorrow — расписание на завтра с опубликованными заменами.\n"
                 "/date DD.MM.YYYY — расписание на дату, например /date 16.09.2026.\n"
@@ -170,8 +259,8 @@ class TelegramHandlers:
                 "суббота показывается при наличии пар.\n\n"
                 "<b>Настройки и состояние</b>\n"
                 "/autopost_on — присылать расписание на завтра после появления "
-                "файла замен, даже если для вашей группы замен нет. "
-                "Повторно — только при изменении её расписания.\n"
+                "файла замен, даже если для выбранной группы или преподавателя замен нет. "
+                "Повторно — только при изменении итогового расписания.\n"
                 "/autopost_off — отключить автоотправку.\n"
                 "/status — сведения о загруженном расписании и кэше.\n"
                 "/help — эта справка.\n\n"
@@ -192,34 +281,56 @@ class TelegramHandlers:
                 return
             self._send_setup(chat_id, thread_id)
             return
+        if command == "/teacher":
+            if not self.can_manage(chat, user):
+                self._deny_management(chat_id, thread_id)
+                return
+            self._send_teacher_search(chat_id, thread_id, argument)
+            return
 
-        group = self._binding_group(chat_id, thread_id)
-        if not group:
+        binding = self.storage.get_binding(chat_id, thread_id)
+        if not binding:
             self._send_setup(chat_id, thread_id)
             return
+        name = str(binding["target_name"])
+        target_type = str(binding["target_type"])
 
         now = dt.datetime.now(self.timezone)
         if command == "/today":
-            self._send_date(chat_id, thread_id, group, now.date())
+            self._send_date(
+                chat_id, thread_id, name, now.date(), target_type=target_type
+            )
         elif command == "/tomorrow":
             self._send_date(
-                chat_id, thread_id, group, now.date() + dt.timedelta(days=1)
+                chat_id,
+                thread_id,
+                name,
+                now.date() + dt.timedelta(days=1),
+                target_type=target_type,
             )
         elif command == "/date":
-            self._send_date(chat_id, thread_id, group, parse_flexible_date(argument))
+            self._send_date(
+                chat_id,
+                thread_id,
+                name,
+                parse_flexible_date(argument),
+                target_type=target_type,
+            )
         elif command == "/week":
             monday = now.date() - dt.timedelta(days=now.weekday())
             self.validate_semester()
             for day_offset in range(6):
-                first = self.schedules.schedule_for(
-                    group,
+                first, _ = self._schedule(
+                    name,
                     monday + dt.timedelta(days=day_offset),
-                    self.config.numerator_week_start,
+                    target_type=target_type,
+                    include_replacements=False,
                 )
-                second = self.schedules.schedule_for(
-                    group,
+                second, _ = self._schedule(
+                    name,
                     monday + dt.timedelta(days=day_offset + 7),
-                    self.config.numerator_week_start,
+                    target_type=target_type,
+                    include_replacements=False,
                 )
                 schedules = {first["week_type"]: first, second["week_type"]: second}
                 numerator_pairs = schedules["числитель"]["pairs"]
@@ -228,12 +339,11 @@ class TelegramHandlers:
                     continue
                 self.sender.send_message(
                     chat_id,
-                    format_weekday_schedule(
-                        group,
-                        first["weekday"],
-                        numerator_pairs,
-                        denominator_pairs,
-                    ),
+                    (
+                        format_teacher_weekday_schedule
+                        if target_type == "teacher"
+                        else format_weekday_schedule
+                    )(name, first["weekday"], numerator_pairs, denominator_pairs),
                     thread_id,
                 )
         elif command == "/autopost_on":
@@ -243,7 +353,7 @@ class TelegramHandlers:
             self.storage.set_autopost(chat_id, thread_id, True)
             self.sender.send_message(
                 chat_id,
-                f"Автоотправка включена для <b>{html.escape(group)}</b> в этой теме.",
+                f"Автоотправка включена для <b>{html.escape(name)}</b> в этой теме.",
                 thread_id,
             )
         elif command == "/autopost_off":
@@ -272,8 +382,18 @@ class TelegramHandlers:
             self._deny_management(chat_id, thread_id)
             return
 
+        if data == "setup:teacher":
+            self._send_teacher_search(chat_id, thread_id, "")
+            return
+        if data == "setup:groups":
+            self.sender.send_message(
+                chat_id, "Выбери курс, затем группу:", thread_id, _course_keyboard()
+            )
+            return
         if data == "courses":
-            self._send_setup(chat_id, thread_id)
+            self.sender.send_message(
+                chat_id, "Выбери курс, затем группу:", thread_id, _course_keyboard()
+            )
             return
         if data.startswith("course:"):
             try:
@@ -307,6 +427,30 @@ class TelegramHandlers:
                 f"Группа <b>{html.escape(group.upper())}</b> привязана к этой теме.\n"
                 "Проверь: /today или /tomorrow\n"
                 "Автоотправка: /autopost_on",
+                thread_id,
+            )
+            return
+        if data.startswith("teacher:"):
+            token = data.split(":", 1)[1]
+            teacher = next(
+                (
+                    name
+                    for name in available_teachers(self.schedules)
+                    if hashlib.sha256(teacher_key(name).encode()).hexdigest()[:16]
+                    == token
+                ),
+                None,
+            )
+            if teacher is None:
+                self.sender.send_message(
+                    chat_id, "Преподаватель не найден в актуальном PDF.", thread_id
+                )
+                return
+            self.storage.set_binding(chat_id, thread_id, teacher, "teacher")
+            self.sender.send_message(
+                chat_id,
+                f"Преподаватель <b>{html.escape(teacher)}</b> привязан к этой теме.\n"
+                "Проверь: /today или /tomorrow\nАвтоотправка: /autopost_on",
                 thread_id,
             )
 

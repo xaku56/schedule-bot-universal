@@ -9,9 +9,10 @@ from typing import Any
 
 from .config import Config
 from .replacement_service import ReplacementRepository, apply_replacements
-from .schedule_formatter import format_schedule
+from .schedule_formatter import format_schedule, format_teacher_schedule
 from .schedule_service import ScheduleRepository
 from .storage import Storage
+from .teacher_schedule import schedule_for_teacher
 from .telegram_queue import TelegramSendQueue
 from .yandex_disk import file_fingerprint
 
@@ -77,28 +78,42 @@ class AutopostService:
     ) -> None:
         chat_id = int(binding["chat_id"])
         thread_id = int(binding["thread_id"])
-        group = str(binding["group_name"])
+        target_type = str(binding["target_type"])
+        name = str(binding["target_name"])
         try:
-            base = self.schedules.schedule_for(
-                group, target_date, self.config.numerator_week_start
+            group_replacements = (
+                replacements_by_group.get(name, []) if target_type == "group" else []
             )
-            group_replacements = replacements_by_group.get(group, [])
-            schedule = apply_replacements(base, group_replacements)
-            message = format_schedule(schedule)
+            if target_type == "teacher":
+                schedule = schedule_for_teacher(
+                    self.schedules,
+                    name,
+                    target_date,
+                    self.config.numerator_week_start,
+                    replacements_by_group,
+                )
+                message = format_teacher_schedule(schedule)
+            else:
+                base = self.schedules.schedule_for(
+                    name, target_date, self.config.numerator_week_start
+                )
+                schedule = apply_replacements(base, group_replacements)
+                message = format_schedule(schedule)
             fingerprint = _schedule_fingerprint(message)
             old_group_fingerprint = _legacy_group_fingerprint(group_replacements)
             date_key = target_date.isoformat()
             previous = self.storage.autopost_fingerprint(
-                chat_id, thread_id, group, date_key
+                chat_id, thread_id, name, date_key, target_type
             )
-            if previous in {
-                fingerprint,
-                old_group_fingerprint,
-                legacy_fingerprint,
-            }:
+            old_fingerprints = (
+                {old_group_fingerprint, legacy_fingerprint}
+                if target_type == "group"
+                else set()
+            )
+            if previous == fingerprint or previous in old_fingerprints:
                 if previous != fingerprint:
                     self.storage.mark_autopost(
-                        chat_id, thread_id, group, date_key, fingerprint
+                        chat_id, thread_id, name, date_key, fingerprint, target_type
                     )
                 self.storage.record_autopost_success(chat_id, thread_id)
                 return
@@ -108,13 +123,16 @@ class AutopostService:
                 thread_id or None,
                 priority=10,
             )
-            self.storage.mark_autopost(chat_id, thread_id, group, date_key, fingerprint)
+            self.storage.mark_autopost(
+                chat_id, thread_id, name, date_key, fingerprint, target_type
+            )
             self.storage.record_autopost_success(chat_id, thread_id)
             logger.info(
-                "Autopost sent chat_id=%s thread_id=%s group=%s date=%s",
+                "Autopost sent chat_id=%s thread_id=%s target=%s:%s date=%s",
                 chat_id,
                 thread_id,
-                group,
+                target_type,
+                name,
                 date_key,
             )
         except Exception as error:
@@ -122,9 +140,10 @@ class AutopostService:
                 chat_id, thread_id, str(error)
             )
             logger.exception(
-                "Autopost failed chat_id=%s thread_id=%s group=%s disabled=%s",
+                "Autopost failed chat_id=%s thread_id=%s target=%s:%s disabled=%s",
                 chat_id,
                 thread_id,
-                group,
+                target_type,
+                name,
                 disabled,
             )
