@@ -8,14 +8,22 @@ from .pdf_parser import PAIR_TIMES_DISPLAY
 from .replacement_service import _pair_number, _replacement_lesson, apply_replacements
 from .schedule_service import WEEKDAYS_BY_NUMBER, ScheduleRepository, week_type_for_date
 
+_ZYBINA_PDF_TYPO = re.compile(r"\bЗыбина\s+О\.\s*Ю\.", re.IGNORECASE)
+
+
+def correct_teacher_name(value: str) -> str:
+    return _ZYBINA_PDF_TYPO.sub("Зыбина О. В.", value)
+
 
 def teacher_key(value: str) -> str:
-    return re.sub(r"[\s.,]", "", value.casefold().replace("ё", "е"))
+    return re.sub(
+        r"[\s.,]", "", correct_teacher_name(value).casefold().replace("ё", "е")
+    )
 
 
 def teacher_names(value: str) -> list[str]:
     return [
-        name.strip()
+        correct_teacher_name(name.strip())
         for name in value.split("/")
         if len(teacher_key(name)) > 1 and name.strip().casefold() != "нет"
     ]
@@ -105,7 +113,7 @@ def schedule_for_teacher(
     active.sort(key=lambda lesson: (int(lesson["pair"]), str(lesson["group"])))
     changes.sort(key=lambda lesson: (int(lesson["pair"]), str(lesson["group"])))
     return {
-        "teacher": teacher,
+        "teacher": correct_teacher_name(teacher),
         "date": target_date.isoformat(),
         "weekday": WEEKDAYS_BY_NUMBER[target_date.weekday()],
         "week_type": week_type_for_date(target_date, numerator_week_start),

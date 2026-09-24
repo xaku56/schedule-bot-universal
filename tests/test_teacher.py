@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from app.autopost import AutopostService
 from app.schedule_formatter import (
+    format_schedule,
     format_teacher_schedule,
     format_teacher_weekday_schedule,
 )
@@ -51,6 +52,53 @@ def repository(directory: str) -> ScheduleRepository:
 
 
 class TeacherScheduleTests(unittest.TestCase):
+    def test_pdf_typo_zybina_yu_is_zybina_v(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = Storage(Path(directory))
+            storage.save_cache(
+                {
+                    "groups": {
+                        "42 иск": {
+                            "course": 4,
+                            "days": {
+                                "четверг": {
+                                    "числитель": [
+                                        lesson(1, "Зыбина О. Ю.", "Информатика")
+                                    ],
+                                    "знаменатель": [],
+                                }
+                            },
+                        }
+                    }
+                }
+            )
+            schedules = ScheduleRepository(storage, "https://example.invalid")
+            self.assertEqual(available_teachers(schedules), ["Зыбина О. В."])
+            self.assertEqual(teacher_names("Х/Зыбина О. Ю."), ["Зыбина О. В."])
+            self.assertEqual(teacher_names("Х"), [])
+            self.assertEqual(teacher_key("Зыбина О. Ю."), teacher_key("Зыбина О. В."))
+            day = dt.date(2026, 9, 24)
+            result = schedule_for_teacher(schedules, "Зыбина О. В.", day, WEEK_START)
+            self.assertEqual(result["teacher"], "Зыбина О. В.")
+            self.assertEqual(
+                schedule_for_teacher(schedules, "Зыбина О. Ю.", day, WEEK_START)[
+                    "teacher"
+                ],
+                "Зыбина О. В.",
+            )
+            self.assertEqual(
+                [(pair["group"], pair["pair"]) for pair in result["pairs"]],
+                [("42 иск", 1)],
+            )
+            self.assertIn(
+                "Зыбина О. В.",
+                format_schedule(schedules.schedule_for("42 иск", day, WEEK_START)),
+            )
+            self.assertNotIn(
+                "Зыбина О. Ю.",
+                format_schedule(schedules.schedule_for("42 иск", day, WEEK_START)),
+            )
+
     def test_teacher_schedule_keeps_parallel_groups_and_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             schedules = repository(directory)
