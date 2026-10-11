@@ -435,7 +435,8 @@ class TelegramHandlers:
             except (TelegramAPIError, OSError, http.client.HTTPException) as error:
                 # Acknowledgement only stops Telegram's button spinner.
                 logger.warning(
-                    "Could not acknowledge setup callback; continuing setup: %s", error
+                    "Could not acknowledge setup callback; continuing setup error_type=%s",
+                    type(error).__name__,
                 )
         if callback.get("data") == "refresh":
             return
@@ -473,7 +474,7 @@ class TelegramHandlers:
             except ValueError:
                 course = 0
             if course not in {1, 2, 3, 4}:
-                logger.warning("Rejected invalid course callback: %r", data[:80])
+                logger.warning("Rejected invalid course callback")
                 self.sender.send_message(
                     chat_id, "Некорректный номер курса.", thread_id
                 )

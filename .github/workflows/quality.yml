@@ -26,7 +26,9 @@ jobs:
           ruff check app tests main.py
           ruff format --check app tests main.py
       - name: Deployment script
-        run: bash -n install-ubuntu.sh
+        run: |
+          bash -n install-ubuntu.sh
+          bash -n scripts/diagnose-network.sh
       - name: Bandit
         run: python -m bandit -r app
       - name: Dependency audit

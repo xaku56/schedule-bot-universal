@@ -6,9 +6,11 @@ import queue
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextvars import Context, copy_context
 from dataclasses import dataclass, field
 from typing import Any
 
+from .logging_config import diagnostic_context, log_diagnostic
 from .telegram_api import TelegramAPI, TelegramRateLimitError
 
 logger = logging.getLogger(__name__)
@@ -26,6 +28,9 @@ class _QueuedMessage:
     message_id: int | None = field(default=None, compare=False)
     attempts: int = field(default=0, compare=False)
     ready_at: float = field(default=0.0, compare=False)
+    enqueued_at: float = field(default_factory=time.perf_counter, compare=False)
+    queued_at: float = field(default_factory=time.perf_counter, compare=False)
+    context: Context = field(default_factory=copy_context, compare=False)
 
 
 class TelegramSendQueue:
@@ -75,6 +80,7 @@ class TelegramSendQueue:
         *,
         timeout: float = 10,
     ) -> Future[None]:
+        log_diagnostic("send_enqueue_started")
         deadline = time.monotonic() + timeout
         with self._condition:
             while self._outstanding >= self._max_size and not self._closed:
@@ -85,19 +91,26 @@ class TelegramSendQueue:
             if self._closed:
                 raise RuntimeError("Telegram send queue is closed")
             result: Future[None] = Future()
-            self._pending.append(
-                _QueuedMessage(
-                    priority,
-                    next(self._sequence),
-                    chat_id,
-                    text,
-                    thread_id,
-                    reply_markup,
-                    result,
-                    message_id,
-                )
+            item = _QueuedMessage(
+                priority,
+                next(self._sequence),
+                chat_id,
+                text,
+                thread_id,
+                reply_markup,
+                result,
+                message_id,
             )
+            self._pending.append(item)
             self._outstanding += 1
+            log_diagnostic(
+                "send_enqueued",
+                send_id=item.sequence,
+                outstanding=self._outstanding,
+                enqueue_wait_ms=round(
+                    (time.monotonic() - (deadline - timeout)) * 1000, 1
+                ),
+            )
             self._condition.notify_all()
             return result
 
@@ -165,9 +178,18 @@ class TelegramSendQueue:
                 self._busy_chats.add(item.chat_id)
                 self._last_global_send = time.monotonic()
                 item.attempts += 1
-                self._executor.submit(self._deliver, item)
+                self._executor.submit(item.context.copy().run, self._deliver, item)
 
     def _deliver(self, item: _QueuedMessage) -> None:
+        diagnostic_context.set(
+            {**(diagnostic_context.get() or {}), "send_id": item.sequence}
+        )
+        started = time.perf_counter()
+        log_diagnostic(
+            "send_started",
+            attempt=item.attempts,
+            queue_wait_ms=round((started - item.queued_at) * 1000, 1),
+        )
         error: Exception | None = None
         try:
             if item.message_id is None:
@@ -195,7 +217,13 @@ class TelegramSendQueue:
                 self._blocked_until = max(self._blocked_until, now + error.retry_after)
                 if item.attempts < 3:
                     item.ready_at = self._blocked_until
+                    item.queued_at = time.perf_counter()
                     self._pending.append(item)
+                    log_diagnostic(
+                        "send_retry_scheduled",
+                        attempt=item.attempts,
+                        retry_after_s=error.retry_after,
+                    )
                     self._condition.notify_all()
                     return
             self._outstanding -= 1
@@ -208,13 +236,28 @@ class TelegramSendQueue:
                 }
             self._condition.notify_all()
         if error is None:
+            log_diagnostic(
+                "send_finished",
+                status="ok",
+                attempt=item.attempts,
+                elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
+                total_ms=round((time.perf_counter() - item.enqueued_at) * 1000, 1),
+            )
             item.result.set_result(None)
         else:
+            log_diagnostic(
+                "send_finished",
+                status="failed",
+                attempt=item.attempts,
+                elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
+                total_ms=round((time.perf_counter() - item.enqueued_at) * 1000, 1),
+                error_type=type(error).__name__,
+            )
             logger.warning(
-                "Telegram send failed chat_id=%s thread_id=%s: %s",
+                "Telegram send failed chat_id=%s thread_id=%s error_type=%s",
                 item.chat_id,
                 item.thread_id,
-                error,
+                type(error).__name__,
             )
             item.result.set_exception(error)
 

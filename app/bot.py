@@ -16,6 +16,7 @@ from .autopost import AutopostService
 from .calendar_service import CalendarService
 from .command_guard import CommandGuard
 from .config import Config
+from .logging_config import diagnostic_context, log_diagnostic
 from .replacement_service import ReplacementRepository
 from .schedule_service import ScheduleRepository
 from .storage import Storage
@@ -165,12 +166,29 @@ class Bot:
             self._refresh_future = self.executor.submit(self._refresh_task)
             return True
 
-    def _handle_update_safely(self, update: dict[str, Any]) -> None:
+    def _handle_update_safely(
+        self, update: dict[str, Any], received_at: float | None = None
+    ) -> None:
+        started = time.perf_counter()
+        update_id = update.get("update_id")
+        context_token = diagnostic_context.set(
+            {"update_id": update_id if isinstance(update_id, int) else None}
+        )
+        status = "ok"
+        log_diagnostic(
+            "update_handler_started",
+            queue_wait_ms=round((started - received_at) * 1000, 1)
+            if received_at is not None
+            else None,
+        )
         try:
             self.handlers.handle_update(update)
-        except Exception as error:
-            logger.exception(
-                "Telegram update failed update_id=%s", update.get("update_id")
+        except Exception as error:  # noqa: BLE001 - Do not log user-controlled exception text.
+            status = "failed"
+            logger.error(
+                "Telegram update failed update_id=%s error_type=%s",
+                (diagnostic_context.get() or {}).get("update_id"),
+                type(error).__name__,
             )
             message = (
                 update.get("message")
@@ -185,14 +203,34 @@ class Bot:
                         f"Не удалось выполнить команду: {html.escape(_public_error(error))}",
                         message.get("message_thread_id"),
                     )
-                except Exception:
-                    logger.exception("Failed to send update error message")
+                except Exception as send_error:  # noqa: BLE001 - Keep polling alive without payload logs.
+                    logger.error(
+                        "Failed to send update error message error_type=%s",
+                        type(send_error).__name__,
+                    )
+        finally:
+            log_diagnostic(
+                "update_handler_finished",
+                status=status,
+                elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
+            )
+            diagnostic_context.reset(context_token)
 
     def _submit_update(self, update: dict[str, Any]) -> None:
+        received_at = time.perf_counter()
+        update_id = update.get("update_id")
+        metadata = {"update_id": update_id if isinstance(update_id, int) else None}
+        log_diagnostic(
+            "update_received",
+            **metadata,
+            kind="callback" if update.get("callback_query") else "message",
+        )
         key = self.command_guard.admit(update, time.monotonic())
         if key is None:
+            log_diagnostic("update_dropped", **metadata, reason="guard")
             return
         if not self._task_slots.acquire(blocking=False):
+            log_diagnostic("update_dropped", **metadata, reason="workers_full")
             self.command_guard.finish(key)
             return
 
@@ -201,7 +239,9 @@ class Bot:
             self._task_slots.release()
 
         try:
-            future = self.executor.submit(self._handle_update_safely, update)
+            future = self.executor.submit(
+                self._handle_update_safely, update, received_at
+            )
         except Exception:
             self.command_guard.finish(key)
             self._task_slots.release()
@@ -269,12 +309,15 @@ class Bot:
                     network_failures = min(network_failures + 1, 4)
                     retry_delay = min(2 ** (network_failures - 1), 5)
                     logger.warning(
-                        "Polling network error: %s; retrying in %s seconds",
-                        error,
+                        "Polling network error_type=%s; retrying in %s seconds",
+                        type(error).__name__,
                         retry_delay,
                     )
-                except Exception:
-                    logger.exception("Runtime iteration failed; retrying in 5 seconds")
+                except Exception as error:  # noqa: BLE001 - Network metadata is logged by TelegramAPI.
+                    logger.error(
+                        "Runtime iteration failed error_type=%s; retrying in 5 seconds",
+                        type(error).__name__,
+                    )
                     retry_delay = 5
 
                 # Polling failures must not postpone refreshes or automatic posts.

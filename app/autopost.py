@@ -153,17 +153,18 @@ class AutopostService:
                 name,
                 date_key,
             )
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - Exception text may contain a Telegram payload.
             disabled = False
             if isinstance(error, TelegramAPIError) and error.delivery_unavailable:
                 disabled = self.storage.record_autopost_failure(
                     chat_id, thread_id, str(error)
                 )
-            logger.exception(
-                "Autopost failed chat_id=%s thread_id=%s target=%s:%s disabled=%s",
+            logger.error(
+                "Autopost failed chat_id=%s thread_id=%s target=%s:%s disabled=%s error_type=%s",
                 chat_id,
                 thread_id,
                 target_type,
                 name,
                 disabled,
+                type(error).__name__,
             )
