@@ -10,7 +10,7 @@ from contextvars import Context, copy_context
 from dataclasses import dataclass, field
 from typing import Any
 
-from .logging_config import diagnostic_context, log_diagnostic
+from .logging_config import diagnostic_context, log_diagnostic, safe_traceback
 from .telegram_api import TelegramAPI, TelegramRateLimitError
 
 logger = logging.getLogger(__name__)
@@ -254,10 +254,11 @@ class TelegramSendQueue:
                 error_type=type(error).__name__,
             )
             logger.warning(
-                "Telegram send failed chat_id=%s thread_id=%s error_type=%s",
+                "Telegram send failed chat_id=%s thread_id=%s error_type=%s traceback=%s",
                 item.chat_id,
                 item.thread_id,
                 type(error).__name__,
+                safe_traceback(error.__traceback__),
             )
             item.result.set_exception(error)
 

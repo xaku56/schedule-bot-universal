@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .config import Config
+from .logging_config import safe_traceback
 from .replacement_service import ReplacementRepository
 from .schedule_calculator import schedule_for_target
 from .schedule_formatter import format_schedule, format_teacher_schedule
@@ -160,11 +161,12 @@ class AutopostService:
                     chat_id, thread_id, str(error)
                 )
             logger.error(
-                "Autopost failed chat_id=%s thread_id=%s target=%s:%s disabled=%s error_type=%s",
+                "Autopost failed chat_id=%s thread_id=%s target=%s:%s disabled=%s error_type=%s traceback=%s",
                 chat_id,
                 thread_id,
                 target_type,
                 name,
                 disabled,
                 type(error).__name__,
+                safe_traceback(error.__traceback__),
             )

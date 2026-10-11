@@ -10,6 +10,7 @@ from typing import Any
 
 from .command_guard import COMMANDS, parse_command
 from .config import Config
+from .logging_config import safe_traceback
 from .replacement_service import ReplacementRepository
 from .schedule_calculator import schedule_for_target
 from .schedule_formatter import (
@@ -435,8 +436,9 @@ class TelegramHandlers:
             except (TelegramAPIError, OSError, http.client.HTTPException) as error:
                 # Acknowledgement only stops Telegram's button spinner.
                 logger.warning(
-                    "Could not acknowledge setup callback; continuing setup error_type=%s",
+                    "Could not acknowledge setup callback; continuing setup error_type=%s traceback=%s",
                     type(error).__name__,
+                    safe_traceback(error.__traceback__),
                 )
         if callback.get("data") == "refresh":
             return

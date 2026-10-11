@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import sys
 import time
+import traceback
 from contextvars import ContextVar
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from types import TracebackType
 
 TOKEN_PATTERN = re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{30,}\b")
 diagnostic_context: ContextVar[dict[str, int | None] | None] = ContextVar(
@@ -26,8 +29,34 @@ def log_diagnostic(event: str, **fields: object) -> None:
         )
 
 
+def safe_traceback(tb: TracebackType | None) -> str:
+    """Serialize stack locations without reading source, locals or exception text."""
+    return json.dumps(
+        [
+            {
+                "file": frame.f_code.co_filename,
+                "function": frame.f_code.co_name,
+                "line": line,
+            }
+            for frame, line in traceback.walk_tb(tb)
+        ],
+        ensure_ascii=False,
+    )
+
+
 class RedactingFormatter(logging.Formatter):
+    def formatException(
+        self,
+        ei: tuple[
+            type[BaseException] | None, BaseException | None, TracebackType | None
+        ],
+    ) -> str:
+        return f"{type(ei[1]).__name__} traceback={safe_traceback(ei[2])}"
+
     def format(self, record: logging.LogRecord) -> str:
+        if record.exc_info:
+            # Another handler may have cached an unsafe exception rendering.
+            record.exc_text = self.formatException(record.exc_info)
         return TOKEN_PATTERN.sub("[REDACTED_TELEGRAM_TOKEN]", super().format(record))
 
 

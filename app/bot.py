@@ -16,7 +16,7 @@ from .autopost import AutopostService
 from .calendar_service import CalendarService
 from .command_guard import CommandGuard
 from .config import Config
-from .logging_config import diagnostic_context, log_diagnostic
+from .logging_config import diagnostic_context, log_diagnostic, safe_traceback
 from .replacement_service import ReplacementRepository
 from .schedule_service import ScheduleRepository
 from .storage import Storage
@@ -186,9 +186,10 @@ class Bot:
         except Exception as error:  # noqa: BLE001 - Do not log user-controlled exception text.
             status = "failed"
             logger.error(
-                "Telegram update failed update_id=%s error_type=%s",
+                "Telegram update failed update_id=%s error_type=%s traceback=%s",
                 (diagnostic_context.get() or {}).get("update_id"),
                 type(error).__name__,
+                safe_traceback(error.__traceback__),
             )
             message = (
                 update.get("message")
@@ -205,8 +206,9 @@ class Bot:
                     )
                 except Exception as send_error:  # noqa: BLE001 - Keep polling alive without payload logs.
                     logger.error(
-                        "Failed to send update error message error_type=%s",
+                        "Failed to send update error message error_type=%s traceback=%s",
                         type(send_error).__name__,
+                        safe_traceback(send_error.__traceback__),
                     )
         finally:
             log_diagnostic(
@@ -309,14 +311,16 @@ class Bot:
                     network_failures = min(network_failures + 1, 4)
                     retry_delay = min(2 ** (network_failures - 1), 5)
                     logger.warning(
-                        "Polling network error_type=%s; retrying in %s seconds",
+                        "Polling network error_type=%s; retrying in %s seconds traceback=%s",
                         type(error).__name__,
                         retry_delay,
+                        safe_traceback(error.__traceback__),
                     )
                 except Exception as error:  # noqa: BLE001 - Network metadata is logged by TelegramAPI.
                     logger.error(
-                        "Runtime iteration failed error_type=%s; retrying in 5 seconds",
+                        "Runtime iteration failed error_type=%s; retrying in 5 seconds traceback=%s",
                         type(error).__name__,
+                        safe_traceback(error.__traceback__),
                     )
                     retry_delay = 5
 
