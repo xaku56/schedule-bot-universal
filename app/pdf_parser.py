@@ -6,7 +6,7 @@ from typing import Any
 
 import pdfplumber
 
-PARSER_VERSION = 5
+PARSER_VERSION = 6
 WEEKDAYS = [
     "понедельник",
     "вторник",
@@ -85,13 +85,17 @@ def _normalized_time(value: str | None) -> str:
     return text
 
 
+def _teacher_line_count(lines: list[str]) -> int:
+    if len(lines) >= 3 and re.fullmatch(r"(?:[А-ЯЁA-Z][.,]\s*){1,2},?", lines[1]):
+        return 2
+    return 1
+
+
 def _lesson_from_raw(
     raw: str, pair: int, parse_warning: str | None = None
 ) -> dict[str, Any]:
     lines = [line.strip() for line in raw.splitlines() if line.strip()]
-    teacher_end = 1
-    if len(lines) >= 4 and re.fullmatch(r"[А-ЯЁA-Z]\.[А-ЯЁA-Z]\.?,?", lines[1]):
-        teacher_end = 2
+    teacher_end = _teacher_line_count(lines)
     teacher = " ".join(lines[:teacher_end]) if lines else ""
     room = lines[-1] if len(lines) >= 3 and _looks_like_room(lines[-1]) else ""
     subject_end = -1 if room else len(lines)
@@ -110,13 +114,15 @@ def _lesson_from_raw(
 
 
 def _looks_like_teacher(line: str) -> bool:
-    text = line.strip()
+    text = re.sub(r"[.,]+", ".", line.strip())
+    if "/" in text:
+        return all(_looks_like_teacher(name) for name in text.split("/"))
+    if text.casefold() in {"x", "х"}:
+        return True
     if not re.match(r"^[А-ЯЁ][а-яё-]+", text):
         return False
     return bool(
-        "/" in text
-        or re.search(r"\b[А-ЯЁA-Z]\.?\s*[А-ЯЁA-Z](?:[.,])?$", text)
-        or re.fullmatch(r"[А-ЯЁ][а-яё-]+(?:\s*/\s*[А-ЯЁ][а-яё-]+)+", text)
+        re.search(r"\b[А-ЯЁA-Z]\.?\s*[А-ЯЁA-Z](?:[.,])?$", text)
         or re.fullmatch(r"[А-ЯЁ][а-яё-]+", text)
     )
 
@@ -126,7 +132,7 @@ def _looks_like_room(line: str) -> bool:
         re.search(
             r"каб|этаж|лектор|[см]?порт\.?\s*\.?(?:з+)?ал|при?т?строй|притрой|мастер|ков\.?\s*мас|"
             r"полигон|архив|библиот|территор|актов|стадион|гараж|кор\.?\s*\d|"
-            r"^\s*\d{2,4}[а-яё]?\s*$",
+            r"^\s*\d{2,4}[а-яё]?(?:\s*/\s*\d{2,4}[а-яё]?)*\s*$",
             line,
             flags=re.IGNORECASE,
         )
@@ -135,7 +141,10 @@ def _looks_like_room(line: str) -> bool:
 
 def _is_complete_lesson(raw: str) -> bool:
     lines = [line for line in raw.splitlines() if line.strip()]
-    return len(lines) >= 2 and _looks_like_teacher(lines[0])
+    teacher_end = _teacher_line_count(lines)
+    return len(lines) > teacher_end and _looks_like_teacher(
+        " ".join(lines[:teacher_end])
+    )
 
 
 def _find_group_header(
@@ -172,51 +181,23 @@ def _header_rows(table: list[list[str | None]], group_columns: list[int]) -> lis
     return result
 
 
-def _repair_pair_boundaries(fragments: dict[int, list[str]]) -> None:
-    """Move lesson text that begins before the matching time cell in the PDF grid."""
-    for pair in range(1, 7):
-        current = fragments[pair]
-        following = fragments[pair + 1]
-
-        while sum(_looks_like_teacher(value.splitlines()[0]) for value in current) > 2:
-            moved = current.pop()
-            if following:
-                first_lines = following[0].splitlines()
-                continuation = not _looks_like_teacher(first_lines[0]) or (
-                    len(first_lines) <= 2 and _looks_like_room(first_lines[-1])
-                )
-                moved_lines = moved.splitlines()
-                if len(moved_lines) == 1 or (
-                    continuation and not _looks_like_room(moved_lines[-1])
-                ):
-                    following[0] = f"{moved}\n{following[0]}"
-                    continue
-            following.insert(0, moved)
-
-        if not current or not following:
-            continue
-        last_lines = current[-1].splitlines()
-        first_lines = following[0].splitlines()
-        continuation = not _looks_like_teacher(first_lines[0]) or (
-            len(first_lines) <= 2 and _looks_like_room(first_lines[-1])
-        )
-        if len(last_lines) == 1 or (
-            continuation and not _looks_like_room(last_lines[-1])
-        ):
-            following[0] = f"{current.pop()}\n{following[0]}"
-
-
 def parse_schedule_pdf(path: Path, course: int | None = None) -> dict[str, Any]:
     with pdfplumber.open(path) as document:
-        tables: list[list[list[str | None]]] = []
-        for page in document.pages:
-            tables.extend(page.extract_tables(TABLE_SETTINGS))
-    if not tables:
-        raise ValueError(f"No tables found in {path.name}")
-    table = max(
-        tables,
-        key=lambda value: len(value) * max((len(row) for row in value), default=0),
-    )
+        tables = [
+            table
+            for page in document.pages
+            for table in page.find_tables(TABLE_SETTINGS)
+        ]
+        if not tables:
+            raise ValueError(f"No tables found in {path.name}")
+        source_table = max(
+            tables,
+            key=lambda value: (
+                len(value.rows) * max((len(row.cells) for row in value.rows), default=0)
+            ),
+        )
+        table = source_table.extract()
+        cell_rows = source_table.rows
 
     _, group_columns, groups = _find_group_header(table)
     header_rows = _header_rows(table, group_columns)
@@ -263,96 +244,51 @@ def parse_schedule_pdf(path: Path, course: int | None = None) -> dict[str, Any]:
             pair_ranges.append((pair, row_start, row_end))
 
         for group, column in zip(groups, group_columns):
-            variants_by_pair: dict[int, list[str]] = {pair: [] for pair in range(1, 8)}
-            warning_values: set[str] = set()
-            fragments_by_pair: dict[int, list[str]] = {}
             for pair, row_start, row_end in pair_ranges:
-                fragments_by_pair[pair] = [
-                    raw
-                    for row_index in range(row_start, row_end)
-                    if (
-                        raw := _clean_cell(
-                            table[row_index][column]
-                            if column < len(table[row_index])
-                            else None
-                        )
-                    )
-                ]
-            _repair_pair_boundaries(fragments_by_pair)
-
-            for pair in range(1, 8):
-                pending_fragment = ""
-                for raw in fragments_by_pair[pair]:
-                    if _is_complete_lesson(raw):
-                        if raw not in variants_by_pair[pair]:
-                            variants_by_pair[pair].append(raw)
+                time_cell = cell_rows[row_start].cells[2]
+                if time_cell is None:
+                    raise ValueError(f"Missing time cell geometry in {path.name}")
+                midpoint = (time_cell[1] + time_cell[3]) / 2
+                fragments = {"числитель": [], "знаменатель": []}
+                for row_index in range(row_start, row_end):
+                    raw = _clean_cell(table[row_index][column])
+                    if not raw:
                         continue
-
-                    variants = variants_by_pair[pair]
-                    if (
-                        variants
-                        and _looks_like_room(raw)
-                        and not _looks_like_room(variants[-1].splitlines()[-1])
-                    ):
-                        variants[-1] = f"{variants[-1]}\n{raw}"
-                        continue
-
-                    candidate = (
-                        f"{pending_fragment}\n{raw}".strip()
-                        if pending_fragment
-                        else raw
-                    )
-                    if _is_complete_lesson(candidate):
-                        if candidate not in variants_by_pair[pair]:
-                            variants_by_pair[pair].append(candidate)
-                        pending_fragment = ""
+                    cell = cell_rows[row_index].cells[column]
+                    if cell is None:
+                        raise ValueError(f"Missing lesson cell geometry in {path.name}")
+                    # A merged cell covers both weeks. Split cells may have unequal heights.
+                    if cell[1] <= time_cell[1] + 3 and cell[3] >= time_cell[3] - 3:
+                        weeks = ("числитель", "знаменатель")
+                    elif (cell[1] + cell[3]) / 2 < midpoint:
+                        weeks = ("числитель",)
                     else:
-                        pending_fragment = candidate
+                        weeks = ("знаменатель",)
+                    for week in weeks:
+                        fragments[week].append(raw)
 
-                if pending_fragment:
-                    # Never silently lose source text. An unusual teacher spelling is
-                    # safer to expose as a warning than to remove from the timetable.
-                    if pending_fragment not in variants_by_pair[pair]:
-                        variants_by_pair[pair].append(pending_fragment)
-                    warning_values.add(pending_fragment)
-                    result[group]["warnings"].append(
-                        {
-                            "weekday": WEEKDAYS[day_index],
-                            "pair": pair,
-                            "raw": pending_fragment,
-                            "reason": "unresolved_pdf_fragment",
-                        }
-                    )
-
-            for pair in range(1, 8):
-                variants = variants_by_pair[pair]
-                if len(variants) > 2:
-                    raise ValueError(
-                        f"More than two week variants in {path.name}: "
-                        f"{group}, {WEEKDAYS[day_index]}, pair {pair}"
-                    )
-
-                numerator = variants[0] if variants else ""
-                denominator = variants[1] if len(variants) > 1 else numerator
-                weekday = WEEKDAYS[day_index]
-                if numerator:
-                    result[group]["days"][weekday]["числитель"].append(
-                        _lesson_from_raw(
-                            numerator,
-                            pair,
-                            "unresolved_pdf_fragment"
-                            if numerator in warning_values
-                            else None,
+                for week, values in fragments.items():
+                    if not values:
+                        continue
+                    if sum(_is_complete_lesson(value) for value in values) > 1:
+                        raise ValueError(
+                            f"Multiple lessons in one week cell in {path.name}: "
+                            f"{group}, {WEEKDAYS[day_index]}, pair {pair}, {week}"
                         )
-                    )
-                if denominator:
-                    result[group]["days"][weekday]["знаменатель"].append(
-                        _lesson_from_raw(
-                            denominator,
-                            pair,
-                            "unresolved_pdf_fragment"
-                            if denominator in warning_values
-                            else None,
+                    raw = "\n".join(values)
+                    warning = None
+                    if not _is_complete_lesson(raw):
+                        # Preserve unusual source text rather than silently removing a pair.
+                        warning = "unresolved_pdf_fragment"
+                        result[group]["warnings"].append(
+                            {
+                                "weekday": WEEKDAYS[day_index],
+                                "pair": pair,
+                                "raw": raw,
+                                "reason": warning,
+                            }
                         )
+                    result[group]["days"][WEEKDAYS[day_index]][week].append(
+                        _lesson_from_raw(raw, pair, warning)
                     )
     return result

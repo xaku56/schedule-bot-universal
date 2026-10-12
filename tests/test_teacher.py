@@ -9,12 +9,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.autopost import AutopostService
+from app.schedule_calculator import schedule_for_target
 from app.schedule_formatter import (
     format_schedule,
     format_teacher_schedule,
     format_teacher_weekday_schedule,
 )
-from app.schedule_service import ScheduleRepository
+from app.schedule_service import ScheduleRepository, ScheduleSnapshot
 from app.storage import Storage
 from app.teacher_schedule import (
     available_teachers,
@@ -52,6 +53,100 @@ def repository(directory: str) -> ScheduleRepository:
 
 
 class TeacherScheduleTests(unittest.TestCase):
+    def test_unassigned_teachers_keep_pairs_and_accept_whole_pair_replacements(
+        self,
+    ) -> None:
+        for marker in ("Х", "X", "х", "x"):
+            with self.subTest(marker=marker):
+                schedules = ScheduleSnapshot(
+                    {
+                        "groups": {
+                            "11 ис": {
+                                "course": 1,
+                                "days": {
+                                    "вторник": {
+                                        "числитель": [
+                                            lesson(1, marker, "Информатика"),
+                                            lesson(
+                                                2, marker + "/Семин А. Г.", "Практика"
+                                            ),
+                                        ],
+                                        "знаменатель": [],
+                                    }
+                                },
+                            }
+                        }
+                    }
+                )
+                self.assertEqual(available_teachers(schedules), ["Семин А. Г."])
+                self.assertEqual(teacher_names(marker), [])
+                unchanged = schedule_for_target(
+                    schedules, "group", "11 ис", TUESDAY, WEEK_START
+                )
+                self.assertEqual(len(unchanged["pairs"]), 2)
+                self.assertEqual(unchanged["pairs"][0]["teacher"], marker)
+                self.assertEqual(
+                    unchanged["pairs"][1]["teacher"], marker + "/Семин А. Г."
+                )
+                semin = schedule_for_teacher(
+                    schedules, "Семин А. Г.", TUESDAY, WEEK_START
+                )
+                self.assertEqual([item["pair"] for item in semin["pairs"]], [2])
+                self.assertEqual(
+                    schedule_for_teacher(schedules, marker, TUESDAY, WEEK_START)[
+                        "pairs"
+                    ],
+                    [],
+                )
+                replacements = {
+                    "11 ис": [
+                        {
+                            "pair": "I",
+                            "from": marker + "(Информатика)",
+                            "to": "Иванова И.И.(Математика)",
+                            "room": "202",
+                        },
+                        {
+                            "pair": "II",
+                            "from": marker + "/Семин А. Г.(Практика)",
+                            "to": "нет",
+                            "room": "-",
+                        },
+                    ]
+                }
+                changed = schedule_for_target(
+                    schedules, "group", "11 ис", TUESDAY, WEEK_START, replacements
+                )
+                self.assertEqual(changed["pairs"][0]["teacher"], "Иванова И.И.")
+                self.assertEqual(changed["pairs"][0]["subject"], "Математика")
+                self.assertEqual(changed["pairs"][0]["room"], "202")
+                self.assertEqual(changed["pairs"][1]["status"], "cancelled")
+                self.assertEqual(
+                    len(
+                        schedule_for_teacher(
+                            schedules, "Иванова И.И.", TUESDAY, WEEK_START, replacements
+                        )["pairs"]
+                    ),
+                    1,
+                )
+                self.assertEqual(
+                    schedule_for_teacher(
+                        schedules, "Семин А. Г.", TUESDAY, WEEK_START, replacements
+                    )["pairs"],
+                    [],
+                )
+                replacements["11 ис"][1]["to"] = "Петров П.П.(Физика)"
+                changed = schedule_for_target(
+                    schedules, "group", "11 ис", TUESDAY, WEEK_START, replacements
+                )
+                self.assertEqual(changed["pairs"][1]["teacher"], "Петров П.П.")
+                self.assertEqual(
+                    schedule_for_teacher(
+                        schedules, "Семин А. Г.", TUESDAY, WEEK_START, replacements
+                    )["pairs"],
+                    [],
+                )
+
     def test_pdf_typo_zybina_yu_is_zybina_v(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             storage = Storage(Path(directory))

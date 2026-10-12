@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from app.config import Config
@@ -13,7 +15,6 @@ from app.pdf_parser import (
     WEEKDAYS,
     _is_complete_lesson,
     _lesson_from_raw,
-    _repair_pair_boundaries,
     normalize_group,
     parse_schedule_pdf,
 )
@@ -28,6 +29,60 @@ from app.schedule_service import (
 )
 from app.storage import Storage
 from app.teacher_schedule import available_teachers, schedule_for_teacher
+
+
+def mock_pdf(day_count: int = 6, first_pair: str = "merged") -> MagicMock:
+    table = []
+    geometry = []
+    teacher = "Иванов И. И.\nПредмет\n101 каб."
+    other = "Х/Петров П. П.\nДругой предмет\n102 каб."
+    y = 0
+    for _ in range(day_count):
+        table.append(["", "", "", "11 г", "12 г", "13 г", "14 г"])
+        geometry.append(SimpleNamespace(cells=[(0, y, 100, y + 10)] * 7))
+        y += 10
+        for pair, time in enumerate(PAIR_TIMES, 1):
+            kind = first_pair if pair == 1 else "merged"
+            split = y + (45 if kind == "unequal" else 50)
+            values = {
+                "merged": (teacher, None),
+                "numerator": (teacher, ""),
+                "denominator": ("", other),
+                "different": (teacher, other),
+                "identical": (teacher, teacher),
+                "empty": ("", ""),
+                "unequal": (teacher, other),
+                "fragments": ("Иванов И. И.", "Предмет\n101 каб."),
+                "unknown": ("Необычный заголовок\nПредмет", ""),
+                "ambiguous": (teacher, other),
+            }[kind]
+            for half, value in enumerate(values):
+                table.append(["", "", time if half == 0 else None, *([value] * 4)])
+                time_box = (0, y, 100, y + 100) if half == 0 else None
+                if kind == "merged":
+                    cell = (100, y, 200, y + 100) if half == 0 else None
+                elif kind == "fragments":
+                    cell = (100, y + half * 25, 200, y + (half + 1) * 25)
+                elif kind == "ambiguous":
+                    cell = (100, y + half * 20, 200, y + (half + 1) * 20)
+                else:
+                    cell = (
+                        (100, y, 200, split)
+                        if half == 0
+                        else (100, split, 200, y + 100)
+                    )
+                geometry.append(
+                    SimpleNamespace(cells=[None, None, time_box, *([cell] * 4)])
+                )
+            y += 100
+    source = MagicMock()
+    source.extract.return_value = table
+    source.rows = geometry
+    page = MagicMock()
+    page.find_tables.return_value = [source]
+    document = MagicMock()
+    document.__enter__.return_value.pages = [page]
+    return document
 
 
 class CoreTests(unittest.TestCase):
@@ -70,52 +125,84 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(lesson["subject"], "Начертательная геометрия")
         self.assertIn("parse_warning", lesson)
 
-    def test_pdf_pair_boundary_repair(self) -> None:
-        fragments = {pair: [] for pair in range(1, 8)}
-        fragments[1] = [
-            "Попова С. А.\nРусский язык\n417 каб.",
-            "Постникова Л. А.\nФизика\n422 каб.",
-            "Оленич Д. Л.\nОсновы безопасности и защиты",
-        ]
-        fragments[2] = ["Родины\n405 каб."]
+    def test_pdf_week_cells_preserve_empty_halves_and_merged_cells(self) -> None:
+        for kind, expected in (
+            ("merged", ("Иванов И. И.", "Иванов И. И.")),
+            ("numerator", ("Иванов И. И.", None)),
+            ("denominator", (None, "Х/Петров П. П.")),
+            ("different", ("Иванов И. И.", "Х/Петров П. П.")),
+            ("identical", ("Иванов И. И.", "Иванов И. И.")),
+            ("empty", (None, None)),
+            ("unequal", ("Иванов И. И.", "Х/Петров П. П.")),
+            ("fragments", ("Иванов И. И.", None)),
+        ):
+            with (
+                self.subTest(kind=kind),
+                patch(
+                    "app.pdf_parser.pdfplumber.open",
+                    return_value=mock_pdf(first_pair=kind),
+                ),
+            ):
+                parsed = parse_schedule_pdf(Path("schedule.pdf"), 1)
+            monday = parsed["11 г"]["days"]["понедельник"]
+            for week, teacher in zip(("числитель", "знаменатель"), expected):
+                first = [item for item in monday[week] if item["pair"] == 1]
+                self.assertEqual(
+                    [item["teacher"] for item in first], [teacher] if teacher else []
+                )
+                if kind == "fragments" and first:
+                    self.assertEqual(first[0]["subject"], "Предмет")
+                    self.assertEqual(first[0]["room"], "101 каб.")
 
-        _repair_pair_boundaries(fragments)
-
-        self.assertEqual(len(fragments[1]), 2)
-        self.assertEqual(
-            fragments[2],
-            ["Оленич Д. Л.\nОсновы безопасности и защиты\nРодины\n405 каб."],
+    def test_pdf_unknown_fragment_is_preserved_in_its_week_only(self) -> None:
+        with patch(
+            "app.pdf_parser.pdfplumber.open",
+            return_value=mock_pdf(first_pair="unknown"),
+        ):
+            group = parse_schedule_pdf(Path("schedule.pdf"), 1)["11 г"]
+        self.assertEqual(len(group["warnings"]), 6)
+        first = group["days"]["понедельник"]["числитель"][0]
+        self.assertEqual(first["raw"], "Необычный заголовок\nПредмет")
+        self.assertEqual(first["parse_warning"], "unresolved_pdf_fragment")
+        self.assertNotIn(
+            1, [item["pair"] for item in group["days"]["понедельник"]["знаменатель"]]
         )
+
+    def test_pdf_rejects_multiple_lessons_in_one_week_instead_of_merging(self) -> None:
+        with (
+            patch(
+                "app.pdf_parser.pdfplumber.open",
+                return_value=mock_pdf(first_pair="ambiguous"),
+            ),
+            self.assertRaisesRegex(ValueError, "Multiple lessons in one week cell"),
+        ):
+            parse_schedule_pdf(Path("schedule.pdf"), 1)
 
     def test_pdf_parser_accepts_five_and_six_days(self) -> None:
         for day_count in (5, 6):
-            table: list[list[str | None]] = []
-            for _ in range(day_count):
-                table.append(["", "", "", "11 г", "12 г", "13 г", "14 г"])
-                for time in PAIR_TIMES:
-                    table.append(
-                        [
-                            "",
-                            "",
-                            time,
-                            "Иванов И. И.\nПредмет",
-                            "Иванов И. И.\nПредмет",
-                            "Иванов И. И.\nПредмет",
-                            "Иванов И. И.\nПредмет",
-                        ]
-                    )
-            page = MagicMock()
-            page.extract_tables.return_value = [table]
-            document = MagicMock()
-            document.__enter__.return_value.pages = [page]
-
-            with patch("app.pdf_parser.pdfplumber.open", return_value=document):
+            with patch(
+                "app.pdf_parser.pdfplumber.open", return_value=mock_pdf(day_count)
+            ):
                 parsed = parse_schedule_pdf(Path("schedule.pdf"), 1)
-
             saturday = parsed["11 г"]["days"]["суббота"]
             expected = 7 if day_count == 6 else 0
             self.assertEqual(len(saturday["числитель"]), expected)
             self.assertEqual(len(saturday["знаменатель"]), expected)
+
+    def test_placeholder_teachers_and_wrapped_names_are_complete_lessons(self) -> None:
+        for teacher in ("Х", "X", "Х/Семин А. Г.", "Семин А. Г./X", "Окунева А,А."):
+            raw = f"{teacher}\nИнформатика\n423/424"
+            self.assertTrue(_is_complete_lesson(raw))
+            lesson = _lesson_from_raw(raw, 2)
+            self.assertEqual(lesson["teacher"], teacher)
+            self.assertEqual(lesson["room"], "423/424")
+            self.assertEqual(lesson["subject"], "Информатика")
+        raw = "Цыплухина П. Р./Мухамбетиярова М.\nА.\nИнформатика\n306 каб."
+        self.assertTrue(_is_complete_lesson(raw))
+        self.assertEqual(
+            _lesson_from_raw(raw, 2)["teacher"], "Цыплухина П. Р./Мухамбетиярова М. А."
+        )
+        self.assertEqual(_lesson_from_raw(raw, 2)["subject"], "Информатика")
 
     def test_semester_file_selection(self) -> None:
         files = []
@@ -257,6 +344,33 @@ class RealPdfTests(unittest.TestCase):
             self.assertNotIn("Х", available_teachers(cache))
             schedules = ScheduleSnapshot({"groups": all_groups})
             numerator_start = dt.date(2026, 2, 2)
+            cases = json.loads(
+                (Path(__file__).parent / "fixtures/week_only_2026_2027.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            for group, weekday, pair, expected_week in cases:
+                for week in ("числитель", "знаменатель"):
+                    with self.subTest(group=group, day=weekday, pair=pair, week=week):
+                        actual = all_groups[group]["days"][weekday][week]
+                        self.assertEqual(
+                            pair in [item["pair"] for item in actual],
+                            week == expected_week,
+                        )
+            for offset, expected in ((1, [1, 2]), (8, [1, 2, 3])):
+                day = schedules.schedule_for(
+                    "41 С", numerator_start + dt.timedelta(days=offset), numerator_start
+                )
+                self.assertEqual([item["pair"] for item in day["pairs"]], expected)
+            for week, teacher in (("числитель", "Х"), ("знаменатель", "Х/Семин А. Г.")):
+                thursday = all_groups["12 с"]["days"]["четверг"][week]
+                english = next(item for item in thursday if item["pair"] == 2)
+                informatics = next(item for item in thursday if item["pair"] == 3)
+                self.assertEqual(english["subject"], "Иностранный язык")
+                self.assertEqual(english["room"], "423/424")
+                self.assertEqual(informatics["subject"], "Информатика")
+                self.assertEqual(informatics["teacher"], teacher)
+                self.assertNotIn("parse_warning", informatics)
             for date, group in (
                 (dt.date(2026, 10, 1), "22 иск"),
                 (dt.date(2026, 10, 8), "21 ис"),
