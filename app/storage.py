@@ -156,13 +156,13 @@ class Storage:
             )
             db.execute("PRAGMA user_version=1")
 
-        if db.execute("PRAGMA user_version").fetchone()[0] < 2:
-            # Refresh locations for all formats, including legacy URLs and cancelled events.
+        if db.execute("PRAGMA user_version").fetchone()[0] < 3:
+            # Notify existing clients of location (v2) and teacher separator (v3) formatting.
             db.execute(
                 "UPDATE calendar_days SET sequence=sequence+1, updated_at=?",
                 (dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ"),),
             )
-            db.execute("PRAGMA user_version=2")
+            db.execute("PRAGMA user_version=3")
 
     @staticmethod
     def _columns(db: sqlite3.Connection, table: str) -> set[str]:

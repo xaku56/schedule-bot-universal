@@ -325,7 +325,7 @@ class CalendarTests(unittest.TestCase):
             ("Плохотнюк А.А.", "506а", "Плохотнюк", "506а каб."),
             ("Семин И.И.", "112", "Семин", "112 каб."),
             ("Харитонова М.В.", "спорт.зал", "Харитонова", "спортзал"),
-            ("Иванова И.И./Петров П.П.", "101", "Иванова/Петров", "101 каб."),
+            ("Иванова И.И./Петров П.П.", "101", "Иванова / Петров", "101 каб."),
             ("Х", "101", "Пара", "101 каб."),
             ("X/Семин А. Г.", "112", "Семин", "112 каб."),
             ("", "", "Пара", ""),
@@ -374,6 +374,41 @@ class CalendarTests(unittest.TestCase):
         self.assertNotIn("DESCRIPTION:", content)
         self.assertNotIn("SUMMARY:Петров", content)
 
+    def test_teacher_separators_in_full_calendar_keep_placeholders_and_rooms(
+        self,
+    ) -> None:
+        schedule = {
+            "date": DAY.isoformat(),
+            "group": "11 ис",
+            "pairs": [
+                {
+                    "pair": 1,
+                    "teacher": "Х/Иванова И.И./Петров П.П.",
+                    "subject": "МДК 01/02",
+                    "room": "423/424",
+                }
+            ],
+        }
+        events = calendar_events("group", "11 ис", schedule, ZONE)
+        days = [
+            {
+                "events": json.dumps(events),
+                "sequence": 0,
+                "updated_at": "20261007T060000Z",
+            }
+        ]
+        full = render_calendar("11 ис", days).decode().replace("\r\n ", "")
+        short = (
+            render_calendar("11 ис", days, title_format="short")
+            .decode()
+            .replace("\r\n ", "")
+        )
+        self.assertIn("Преподаватель: Х / Иванова И.И. / Петров П.П.", full)
+        self.assertIn("SUMMARY:1. МДК 01/02", full)
+        self.assertIn("SUMMARY:Иванова / Петров\r\n", short)
+        self.assertIn("LOCATION:423/424", full)
+        self.assertEqual(schedule["pairs"][0]["teacher"], "Х/Иванова И.И./Петров П.П.")
+
     def test_existing_subscriptions_refresh_once_and_keep_formats(
         self,
     ) -> None:
@@ -412,7 +447,7 @@ class CalendarTests(unittest.TestCase):
             stamp = db.execute(
                 "SELECT updated_at FROM calendar_preferences WHERE user_id=5"
             ).fetchone()[0]
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
         self.assertGreater(stamp, "20260101T000000Z")
         self.service.storage = Storage(self.config.data_dir)
         self.assertEqual(self.service.feed(short_token, self.now(10)), short)
@@ -468,6 +503,58 @@ class CalendarTests(unittest.TestCase):
         self.service.run(self.now(10))
         # Restore the manually cancelled lesson: subsequent source updates still work.
         self.assertIn(b"SEQUENCE:3\r\n", self.service.feed(token, self.now(10)))
+
+    def test_teacher_spacing_upgrade_refreshes_existing_links_once(self) -> None:
+        token = self.storage.calendar_subscription(42, None, 5)["token"]
+        self.storage.set_calendar_format(5, "short")
+        self.service.run(self.now(10))
+        with self.storage.connect() as db:
+            before = dict(
+                db.execute(
+                    "SELECT * FROM calendar_days ORDER BY target_date LIMIT 1"
+                ).fetchone()
+            )
+            events = json.loads(before["events"])
+            events[0]["description"] = (
+                "Группа: 11 ИС\nПреподаватель: Х/Иванова И.И./Петров П.П."
+            )
+            db.execute(
+                "UPDATE calendar_days SET events=? WHERE target_date=?",
+                (json.dumps(events), before["target_date"]),
+            )
+            preference = tuple(
+                db.execute(
+                    "SELECT * FROM calendar_preferences WHERE user_id=5"
+                ).fetchone()
+            )
+            db.execute("PRAGMA user_version=2")
+        self.service.storage = Storage(self.config.data_dir)
+        full = self.feed(10).decode().replace("\r\n ", "")
+        short = self.service.feed(token, self.now(10))
+        self.assertIn("Преподаватель: Х / Иванова И.И. / Петров П.П.", full)
+        self.assertIn("SUMMARY:Иванова / Петров", short.decode().replace("\r\n ", ""))
+        self.assertIn("UID:" + events[0]["uid"], full)
+        with self.service.storage.connect() as db:
+            after = db.execute(
+                "SELECT * FROM calendar_days WHERE target_date=?",
+                (before["target_date"],),
+            ).fetchone()
+            self.assertEqual(after["sequence"], before["sequence"] + 1)
+            self.assertEqual(json.loads(after["events"]), events)
+            self.assertEqual(
+                tuple(
+                    db.execute(
+                        "SELECT * FROM calendar_preferences WHERE user_id=5"
+                    ).fetchone()
+                ),
+                preference,
+            )
+        self.assertEqual(
+            self.service.storage.calendar_subscription(42, None, 5)["token"], token
+        )
+        self.service.storage = Storage(self.config.data_dir)
+        self.assertEqual(self.service.feed(token, self.now(10)), short)
+        self.assertEqual(self.feed(10).decode().replace("\r\n ", ""), full)
 
     def test_location_formatting_in_both_formats(self) -> None:
         self.service.run(self.now(10))

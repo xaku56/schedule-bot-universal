@@ -5,7 +5,7 @@ import html
 from typing import Any
 
 from .pdf_parser import PAIR_TIMES_DISPLAY
-from .teacher_schedule import correct_teacher_name
+from .teacher_schedule import format_teacher_name
 
 WEEKDAY_ACCUSATIVE = {
     "понедельник": "понедельник",
@@ -35,7 +35,7 @@ MONTHS = [
 
 def _lesson_detail(lesson: dict[str, Any]) -> str:
     subject = html.escape(str(lesson.get("subject") or lesson.get("raw") or ""))
-    teacher = html.escape(correct_teacher_name(str(lesson.get("teacher", ""))))
+    teacher = html.escape(format_teacher_name(str(lesson.get("teacher", ""))))
     room = html.escape(str(lesson.get("room", "")))
     status = str(lesson.get("status", ""))
     detail = subject
@@ -118,7 +118,7 @@ def format_teacher_schedule(schedule: dict[str, Any], note: str | None = None) -
     weekday = WEEKDAY_ACCUSATIVE.get(schedule["weekday"], schedule["weekday"])
     lines = [
         f"<b>Расписание на {html.escape(weekday)} {target_date.day} {MONTHS[target_date.month]}</b>",
-        f"Преподаватель: <b>{html.escape(schedule['teacher'])}</b> · {html.escape(schedule['week_type'])}",
+        f"Преподаватель: <b>{html.escape(format_teacher_name(schedule['teacher']))}</b> · {html.escape(schedule['week_type'])}",
     ]
     if not schedule["pairs"]:
         lines.extend(["", "Пар нет"])
@@ -156,7 +156,7 @@ def format_teacher_weekday_schedule(
     denominator = by_pair(denominator_pairs)
     lines = [
         f"<b>{html.escape(weekday.capitalize())}</b>",
-        f"Преподаватель: <b>{html.escape(correct_teacher_name(teacher))}</b>",
+        f"Преподаватель: <b>{html.escape(format_teacher_name(teacher))}</b>",
     ]
     pair_numbers = sorted(numerator.keys() | denominator.keys())
     if not pair_numbers:

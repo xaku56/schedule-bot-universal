@@ -39,7 +39,7 @@ class Bot:
         self.storage = Storage(config.data_dir)
         self.schedules = ScheduleRepository(self.storage, config.schedule_url)
         self.replacements = ReplacementRepository(config.replacements_url)
-        self.telegram = TelegramAPI(config.token)
+        self.telegram = TelegramAPI(config.token, ipv4_only=config.telegram_ipv4_only)
         self.sender = TelegramSendQueue(
             self.telegram,
             messages_per_second=config.telegram_messages_per_second,
@@ -114,6 +114,14 @@ class Bot:
         if removed:
             logger.info("Removed %s old autopost records", removed)
         self.last_schedule_refresh = time.time()
+        try:
+            self.telegram.register_commands()
+        except Exception as error:  # noqa: BLE001 - Optional menu must not stop polling.
+            logger.warning(
+                "Could not register bot commands error_type=%s traceback=%s",
+                type(error).__name__,
+                safe_traceback(error.__traceback__),
+            )
 
     def _expected_semester_key(self) -> str:
         if self.config.expected_semester:

@@ -14,11 +14,13 @@ from app.schedule_formatter import (
     format_schedule,
     format_teacher_schedule,
     format_teacher_weekday_schedule,
+    format_weekday_schedule,
 )
 from app.schedule_service import ScheduleRepository, ScheduleSnapshot
 from app.storage import Storage
 from app.teacher_schedule import (
     available_teachers,
+    format_teacher_name,
     schedule_for_teacher,
     teacher_key,
     teacher_names,
@@ -53,6 +55,29 @@ def repository(directory: str) -> ScheduleRepository:
 
 
 class TeacherScheduleTests(unittest.TestCase):
+    def test_teacher_slashes_are_spaced_only_for_display(self) -> None:
+        raw = "Х/ Иванова И.И. /Зыбина О. Ю."
+        display = "Х / Иванова И.И. / Зыбина О. В."
+        self.assertEqual(format_teacher_name(raw), display)
+        self.assertEqual(teacher_key(raw), teacher_key(display))
+        self.assertEqual(teacher_names(raw), teacher_names(display))
+        pair = {**lesson(1, raw, "МДК 01/02"), "room": "423/424"}
+        schedule = {
+            "group": "11 ис",
+            "date": TUESDAY.isoformat(),
+            "weekday": "вторник",
+            "week_type": "числитель",
+            "pairs": [pair],
+        }
+        for text in (
+            format_schedule(schedule),
+            format_weekday_schedule("11 ис", "вторник", [pair], [pair]),
+        ):
+            self.assertIn(display, text)
+            self.assertIn("МДК 01/02", text)
+            self.assertIn("423/424", text)
+        self.assertEqual(pair["teacher"], raw)
+
     def test_unassigned_teachers_keep_pairs_and_accept_whole_pair_replacements(
         self,
     ) -> None:

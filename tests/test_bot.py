@@ -31,6 +31,35 @@ class FakeSender:
 
 
 class BotTests(unittest.TestCase):
+    def test_startup_registers_menu_and_survives_a_safe_registration_failure(
+        self,
+    ) -> None:
+        secret = "PRIVATE_REGISTRATION_ERROR"
+        for error in (None, TimeoutError(secret)):
+            with tempfile.TemporaryDirectory() as directory:
+                bot = self.make_bot(directory)
+                try:
+                    with (
+                        patch.object(
+                            bot.schedules, "refresh", return_value=(False, "unchanged")
+                        ),
+                        patch.object(bot, "_validate_semester_config"),
+                        patch.object(
+                            bot.telegram, "register_commands", side_effect=error
+                        ) as register,
+                    ):
+                        if error is None:
+                            bot.initialize()
+                        else:
+                            with self.assertLogs("app.bot", "WARNING") as logs:
+                                bot.initialize()
+                            self.assertNotIn(secret, "\n".join(logs.output))
+                            self.assertIn("traceback=", logs.output[0])
+                        register.assert_called_once()
+                    self.assertGreater(bot.last_schedule_refresh, 0)
+                finally:
+                    bot.close()
+
     def test_initialization_failure_closes_workers_and_preserves_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             bot = self.make_bot(directory)

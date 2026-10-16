@@ -3,21 +3,23 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-COMMANDS = {
-    "/help",
+COMMAND_DESCRIPTIONS = {
+    "today": "Расписание на сегодня с заменами",
+    "tomorrow": "Расписание на завтра с заменами",
+    "date": "Расписание на дату: /date DD.MM.YYYY",
+    "week": "Основное расписание: числитель и знаменатель",
+    "setup": "Выбрать группу или преподавателя",
+    "autopost_on": "Включить автоотправку расписания",
+    "autopost_off": "Отключить автоотправку расписания",
+    "calendar": "Получить личную ссылку календаря",
+    "calendar_format": "Формат календаря: /calendar_format short или full",
+    "calendar_off": "Отозвать свои ссылки календаря этого чата или темы",
+    "help": "Справка по командам",
+}
+COMMANDS = {f"/{command}" for command in COMMAND_DESCRIPTIONS} | {
     "/start",
-    "/setup",
     "/group",
     "/groups",
-    "/today",
-    "/tomorrow",
-    "/date",
-    "/week",
-    "/autopost_on",
-    "/autopost_off",
-    "/calendar",
-    "/calendar_off",
-    "/calendar_format",
 }
 SCHEDULE_COMMANDS = {"/today", "/tomorrow", "/date", "/week"}
 

@@ -161,7 +161,7 @@ class DiagnosticsTests(unittest.TestCase):
             with (
                 self.subTest(stage=stage),
                 patch(
-                    "app.telegram_api.urllib.request.urlopen",
+                    "app.telegram_api.urllib.request.OpenerDirector.open",
                     side_effect=result if isinstance(result, Exception) else None,
                     return_value=result,
                 ),
@@ -210,7 +210,10 @@ class DiagnosticsTests(unittest.TestCase):
 
             with (
                 patch.object(bot.handlers, "handle_update", side_effect=handle),
-                patch("app.telegram_api.urllib.request.urlopen", side_effect=request),
+                patch(
+                    "app.telegram_api.urllib.request.OpenerDirector.open",
+                    side_effect=request,
+                ),
                 self.assertLogs("app", "INFO") as logs,
             ):
                 try:
@@ -263,7 +266,7 @@ class DiagnosticsTests(unittest.TestCase):
         with (
             patch.object(diagnostic_logger, "disabled", True),
             patch(
-                "app.telegram_api.urllib.request.urlopen",
+                "app.telegram_api.urllib.request.OpenerDirector.open",
                 return_value=response({"ok": True, "result": []}),
             ),
             self.assertNoLogs("app.diagnostics", "INFO"),
@@ -276,6 +279,9 @@ class DiagnosticsTests(unittest.TestCase):
             patch.dict(os.environ, env, clear=True),
         ):
             self.assertTrue(Config.from_env().diagnostics_enabled)
+            self.assertFalse(Config.from_env().telegram_ipv4_only)
+            with patch.dict(os.environ, {"TELEGRAM_IPV4_ONLY": "true"}):
+                self.assertTrue(Config.from_env().telegram_ipv4_only)
             with patch.dict(os.environ, {"DIAGNOSTICS_ENABLED": "false"}):
                 self.assertFalse(Config.from_env().diagnostics_enabled)
 

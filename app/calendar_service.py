@@ -18,7 +18,7 @@ from .replacement_service import ReplacementRepository
 from .schedule_calculator import schedule_for_target
 from .schedule_service import ScheduleRepository
 from .storage import Storage
-from .teacher_schedule import correct_teacher_name, teacher_names
+from .teacher_schedule import correct_teacher_name, format_teacher_name, teacher_names
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +104,7 @@ def _short_title(event: dict[str, str], name: str, target_type: str) -> str:
         else (event["description"].partition("Преподаватель: ")[2].split("\n", 1)[0])
     )
     surnames = dict.fromkeys(person.split()[0] for person in teacher_names(teacher))
-    return "/".join(surnames) or "Пара"
+    return " / ".join(surnames) or "Пара"
 
 
 def _format_location(value: str) -> str:
@@ -136,7 +136,11 @@ def render_calendar(
         "VERSION:2.0",
         "PRODID:-//Schedule Bot//Учебное расписание//RU",
         "CALSCALE:GREGORIAN",
-        "X-WR-CALNAME:" + _text("Расписание · " + name),
+        "X-WR-CALNAME:"
+        + _text(
+            "Расписание · "
+            + (format_teacher_name(name) if target_type == "teacher" else name)
+        ),
         "X-PUBLISHED-TTL:PT1H",
     ]
     for day in days:
@@ -159,7 +163,12 @@ def render_calendar(
                 ]
             )
             if not short:
-                lines.append("DESCRIPTION:" + _text(event["description"]))
+                description = re.sub(
+                    r"(?m)^(Преподаватель: )(.*)$",
+                    lambda match: match[1] + format_teacher_name(match[2]),
+                    event["description"],
+                )
+                lines.append("DESCRIPTION:" + _text(description))
             lines.extend(
                 [
                     "LOCATION:" + _text(_format_location(event["location"])),

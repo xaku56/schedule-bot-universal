@@ -1,19 +1,90 @@
 from __future__ import annotations
 
+import http.client
 import itertools
 import json
+import socket
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
 
+from .command_guard import COMMAND_DESCRIPTIONS
 from .logging_config import log_diagnostic
 
 MAX_TELEGRAM_RESPONSE_BYTES = 10 * 1024 * 1024
 POLL_TIMEOUT_SECONDS = 10
 POLL_SOCKET_TIMEOUT_SECONDS = POLL_TIMEOUT_SECONDS + 10
 _REQUEST_IDS = itertools.count(1)
+
+
+def _create_ipv4_connection(
+    address: tuple[str, int],
+    timeout: Any = socket._GLOBAL_DEFAULT_TIMEOUT,
+    source_address: tuple[str, int] | None = None,
+) -> socket.socket:
+    """Keep create_connection semantics, restricting DNS results to IPv4."""
+    last_error = None
+    for family, kind, protocol, _, destination in socket.getaddrinfo(
+        *address, family=socket.AF_INET, type=socket.SOCK_STREAM
+    ):
+        connection = None
+        try:
+            connection = socket.socket(family, kind, protocol)
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                connection.settimeout(timeout)
+            if source_address:
+                connection.bind(source_address)
+            connection.connect(destination)
+            return connection
+        except OSError as error:
+            last_error = error
+            if connection is not None:
+                connection.close()
+    if last_error is not None:
+        raise last_error
+    raise OSError("getaddrinfo returns an empty list")
+
+
+class _TelegramHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(
+        self,
+        host: str,
+        *,
+        ipv4_only: bool,
+        diagnostic_metadata: dict[str, Any],
+        **kwargs: Any,
+    ):
+        super().__init__(host, **kwargs)
+        self._diagnostic_metadata = diagnostic_metadata
+        if ipv4_only:
+            # Instance hook: other HTTP clients and the process resolver are untouched.
+            self._create_connection = _create_ipv4_connection
+
+    def connect(self) -> None:
+        super().connect()
+        log_diagnostic(
+            "telegram_connected",
+            **self._diagnostic_metadata,
+            ip_family="IPv4" if self.sock.family == socket.AF_INET else "IPv6",
+            via_proxy=self._tunnel_host is not None,
+        )
+
+
+class _TelegramHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, ipv4_only: bool):
+        super().__init__()
+        self._ipv4_only = ipv4_only
+
+    def https_open(self, request: urllib.request.Request):
+        return self.do_open(
+            _TelegramHTTPSConnection,
+            request,
+            context=self._context,
+            ipv4_only=self._ipv4_only,
+            diagnostic_metadata=getattr(request, "telegram_metadata", {}),
+        )
 
 
 class TelegramAPIError(RuntimeError):
@@ -47,8 +118,10 @@ def _read_response(response: Any) -> bytes:
 
 
 class TelegramAPI:
-    def __init__(self, token: str):
+    def __init__(self, token: str, *, ipv4_only: bool = False):
         self.base_url = f"https://api.telegram.org/bot{token}"
+        self._ipv4_only = ipv4_only
+        self._opener = urllib.request.build_opener(_TelegramHTTPSHandler(ipv4_only))
 
     def request(
         self, method: str, *, retry_rate_limit: bool = True, **params: Any
@@ -97,16 +170,16 @@ class TelegramAPI:
             "request_id": request_id,
             "attempt": attempt,
             "method": method if method.isascii() and method.isalnum() else "invalid",
+            "ipv4_only": self._ipv4_only,
         }
+        request.telegram_metadata = metadata
         started = time.perf_counter()
         stage = "connect_headers"
         log_diagnostic("telegram_request_started", **metadata, timeout_s=timeout)
         try:
             try:
                 # The HTTPS scheme and exact Telegram host are validated above.
-                with urllib.request.urlopen(  # nosec B310
-                    request, timeout=timeout
-                ) as response:
+                with self._opener.open(request, timeout=timeout) as response:
                     http_code = getattr(response, "status", 200)
                     log_diagnostic(
                         "telegram_headers_received",
@@ -181,6 +254,15 @@ class TelegramAPI:
             http_code=http_code,
         )
         return payload.get("result")
+
+    def register_commands(self) -> None:
+        self.request(
+            "setMyCommands",
+            commands=[
+                {"command": name, "description": description}
+                for name, description in COMMAND_DESCRIPTIONS.items()
+            ],
+        )
 
     def updates(self, offset: int | None) -> list[dict[str, Any]]:
         return self.request(

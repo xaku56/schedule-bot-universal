@@ -20,6 +20,10 @@ def correct_teacher_name(value: str) -> str:
     return _ZYBINA_PDF_TYPO.sub("Зыбина О. В.", value)
 
 
+def format_teacher_name(value: str) -> str:
+    return " / ".join(name.strip() for name in correct_teacher_name(value).split("/"))
+
+
 def teacher_key(value: str) -> str:
     return re.sub(
         r"[\s.,]", "", correct_teacher_name(value).casefold().replace("ё", "е")

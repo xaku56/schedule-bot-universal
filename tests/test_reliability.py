@@ -61,14 +61,17 @@ class TelegramErrorTests(unittest.TestCase):
             )
             with (
                 self.subTest(content=content),
-                patch("app.telegram_api.urllib.request.urlopen", side_effect=error),
+                patch(
+                    "app.telegram_api.urllib.request.OpenerDirector.open",
+                    side_effect=error,
+                ),
                 self.assertRaises(TelegramAPIError),
             ):
                 TelegramAPI("test").request("sendMessage")
             self.assertTrue(body.closed)
         with (
             patch(
-                "app.telegram_api.urllib.request.urlopen",
+                "app.telegram_api.urllib.request.OpenerDirector.open",
                 return_value=self.response([]),
             ),
             self.assertRaisesRegex(TelegramAPIError, "Invalid JSON response"),
@@ -88,7 +91,7 @@ class TelegramErrorTests(unittest.TestCase):
             with (
                 self.subTest(method=method),
                 patch(
-                    "app.telegram_api.urllib.request.urlopen",
+                    "app.telegram_api.urllib.request.OpenerDirector.open",
                     return_value=self.response({"ok": True, "result": True}),
                 ) as request,
             ):
@@ -98,7 +101,7 @@ class TelegramErrorTests(unittest.TestCase):
     def test_polling_preserves_offset_and_waits_less_than_socket_timeout(self) -> None:
         update = {"update_id": 42, "message": {"text": "/today"}}
         with patch(
-            "app.telegram_api.urllib.request.urlopen",
+            "app.telegram_api.urllib.request.OpenerDirector.open",
             return_value=self.response({"ok": True, "result": [update]}),
         ) as request:
             self.assertEqual(TelegramAPI("test").updates(42), [update])
@@ -113,7 +116,7 @@ class TelegramErrorTests(unittest.TestCase):
     def test_callback_rate_limit_does_not_delay_setup_with_a_retry(self) -> None:
         with (
             patch(
-                "app.telegram_api.urllib.request.urlopen",
+                "app.telegram_api.urllib.request.OpenerDirector.open",
                 return_value=self.response(
                     {"ok": False, "error_code": 429, "parameters": {"retry_after": 30}}
                 ),
@@ -128,7 +131,7 @@ class TelegramErrorTests(unittest.TestCase):
     def test_direct_request_waits_full_retry_after(self) -> None:
         with (
             patch(
-                "app.telegram_api.urllib.request.urlopen",
+                "app.telegram_api.urllib.request.OpenerDirector.open",
                 side_effect=[
                     self.response(
                         {
@@ -149,7 +152,7 @@ class TelegramErrorTests(unittest.TestCase):
     def test_send_hands_rate_limit_to_scheduler_without_sleeping(self) -> None:
         with (
             patch(
-                "app.telegram_api.urllib.request.urlopen",
+                "app.telegram_api.urllib.request.OpenerDirector.open",
                 return_value=self.response(
                     {"ok": False, "error_code": 429, "parameters": {"retry_after": 30}}
                 ),
