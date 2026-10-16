@@ -7,8 +7,14 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from app.autopost import AutopostService
+from app.replacement_service import (
+    ReplacementRepository,
+    _replacement_lesson,
+    parse_replacements_all,
+)
 from app.schedule_calculator import schedule_for_target
 from app.schedule_formatter import (
     format_schedule,
@@ -26,9 +32,18 @@ from app.teacher_schedule import (
     teacher_names,
 )
 from app.telegram_handlers import TelegramHandlers
+from tests.test_security import docx_with_xml
 
 WEEK_START = dt.date(2026, 9, 21)
 TUESDAY = dt.date(2026, 9, 22)
+
+
+def replacement_teacher_fixture() -> bytes:
+    # Actual text and paragraph/run boundaries from 15.10.2026, group 23 ГДК, pair II.
+    xml = (
+        Path(__file__).parent / "fixtures/replacement_teacher_paragraphs.xml"
+    ).read_bytes()
+    return docx_with_xml(xml)
 
 
 def lesson(pair: int, teacher: str, subject: str) -> dict:
@@ -55,6 +70,29 @@ def repository(directory: str) -> ScheduleRepository:
 
 
 class TeacherScheduleTests(unittest.TestCase):
+    def test_docx_paragraphs_separate_teacher_names_from_subject(self) -> None:
+        row = parse_replacements_all(replacement_teacher_fixture())["23 гдк"][0]
+        self.assertIn("Селиверстова К. И. МДК.01.01", row["from"])
+        self.assertEqual(
+            _replacement_lesson(row["from"]),
+            ("Максимочкин В. Е./Селиверстова К. И.", "История дизайна"),
+        )
+        self.assertEqual(
+            _replacement_lesson(row["to"]),
+            ("Селиверстова К. И.", "МДК.01.01 Дизайн – проектирование"),
+        )
+        legacy = "Максимочкин В. Е. Селиверстова К. И.МДК.01.01 Дизайн - проектирование"
+        self.assertEqual(
+            teacher_names(legacy), ["Максимочкин В. Е.", "Селиверстова К. И."]
+        )
+        for teacher, expected in (
+            ("Егорова", ["Егорова"]),
+            ("Х/Егорова", ["Егорова"]),
+            ("Х/Иванова И.И./Петров П.П.", ["Иванова И.И.", "Петров П.П."]),
+            ("Салтыков-Щедрин А.А.", ["Салтыков-Щедрин А.А."]),
+        ):
+            self.assertEqual(teacher_names(teacher), expected)
+
     def test_teacher_slashes_are_spaced_only_for_display(self) -> None:
         raw = "Х/ Иванова И.И. /Зыбина О. Ю."
         display = "Х / Иванова И.И. / Зыбина О. В."
@@ -412,6 +450,88 @@ class FakeSender:
 
 
 class TeacherIntegrationTests(unittest.TestCase):
+    def test_setup_has_individual_teachers_and_replacement_matching_from_real_docx(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            schedules = repository(directory)
+            base = [lesson(2, "Максимочкин В. Е.", "История дизайна")]
+            schedules.cache["groups"]["23 гдк"] = {
+                "course": 2,
+                "days": {"четверг": {"числитель": base, "знаменатель": base}},
+            }
+            replacements = ReplacementRepository("https://example.invalid")
+            sender = FakeSender()
+            handlers = TelegramHandlers(
+                config=SimpleNamespace(numerator_week_start=WEEK_START),
+                storage=schedules.storage,
+                schedules=schedules,
+                replacements=replacements,
+                telegram=SimpleNamespace(answer_callback=lambda _id: None),
+                sender=sender,
+                timezone=dt.timezone.utc,
+                validate_semester=lambda: None,
+            )
+            message = {"chat": {"id": 1, "type": "private"}, "from": {"id": 1}}
+            item = {"name": "15.10.2026.docx", "modified": "1"}
+            with (
+                patch.object(replacements, "refresh_files", return_value=[item]),
+                patch.object(
+                    replacements, "document", return_value=replacement_teacher_fixture()
+                ),
+            ):
+                handlers.handle_callback(
+                    {
+                        "id": "setup",
+                        "data": "setup:teacher",
+                        "message": message,
+                        "from": {"id": 1},
+                    }
+                )
+                buttons = {
+                    button["text"]: button["callback_data"]
+                    for row in sender.messages[-1][1]["inline_keyboard"]
+                    for button in row
+                    if button["callback_data"].startswith("teacher:")
+                }
+                self.assertIn("Максимочкин В. Е.", buttons)
+                self.assertIn("Селиверстова К. И.", buttons)
+                self.assertFalse(
+                    any("МДК" in name or "проектирование" in name for name in buttons)
+                )
+                handlers.handle_callback(
+                    {
+                        "id": "select",
+                        "data": buttons["Селиверстова К. И."],
+                        "message": message,
+                        "from": {"id": 1},
+                    }
+                )
+                self.assertEqual(
+                    schedules.storage.get_binding(1, None)["target_name"],
+                    "Селиверстова К. И.",
+                )
+                handlers.handle_message({**message, "text": "/date 15.10.2026"})
+                self.assertIn("23 ГДК", sender.messages[-1][0])
+                self.assertIn(
+                    "МДК.01.01 Дизайн – проектирование", sender.messages[-1][0]
+                )
+                removed = schedule_for_teacher(
+                    schedules,
+                    "Максимочкин В. Е.",
+                    dt.date(2026, 10, 15),
+                    WEEK_START,
+                    replacements.replacements_for_item(item),
+                )
+                self.assertEqual(removed["pairs"], [])
+                self.assertEqual(
+                    [
+                        (row["group"], row["pair"], row["status"])
+                        for row in removed["changes"]
+                    ],
+                    [("23 гдк", 2, "removed")],
+                )
+
     def test_setup_course_and_teacher_pages_edit_the_original_message(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             schedules = repository(directory)

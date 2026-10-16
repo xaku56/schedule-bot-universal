@@ -35,6 +35,22 @@ TABLE_SETTINGS = {
     "join_tolerance": 3,
     "intersection_tolerance": 3,
 }
+_TEACHER_NAME_PREFIX = re.compile(
+    r"[А-ЯЁ][а-яё-]+\s+[А-ЯЁA-Z]\s*[.,]\s*[А-ЯЁA-Z](?:[.,]|(?=\s|$))"
+)
+
+
+def split_teacher_names(value: str) -> list[str]:
+    """Separate adjacent full names and exclude trailing lesson text."""
+    result = []
+    for part in value.split("/"):
+        remaining = part.strip()
+        names = []
+        while match := _TEACHER_NAME_PREFIX.match(remaining):
+            names.append(match[0])
+            remaining = remaining[match.end() :].lstrip(" ,;")
+        result.extend(names or [part.strip()])
+    return result
 
 
 def normalize_group(value: str) -> str:

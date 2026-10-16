@@ -1,0 +1,60 @@
+<?xml version='1.0' encoding='utf-8'?>
+<ns0:document xmlns:ns0="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <ns0:body>
+    <ns0:tbl>
+      <ns0:tr>
+        <ns0:tc>
+          <ns0:p>
+            <ns0:r>
+              <ns0:t>II</ns0:t>
+            </ns0:r>
+          </ns0:p>
+        </ns0:tc>
+        <ns0:tc>
+          <ns0:p>
+            <ns0:r>
+              <ns0:t xml:space="preserve">23 </ns0:t>
+            </ns0:r>
+            <ns0:r>
+              <ns0:t>гдк</ns0:t>
+            </ns0:r>
+          </ns0:p>
+        </ns0:tc>
+        <ns0:tc>
+          <ns0:p>
+            <ns0:r>
+              <ns0:t>Максимочкин</ns0:t>
+            </ns0:r>
+            <ns0:r>
+              <ns0:t xml:space="preserve"> В. Е. </ns0:t>
+            </ns0:r>
+          </ns0:p>
+          <ns0:p>
+            <ns0:r>
+              <ns0:t>Селиверстова К. И.</ns0:t>
+            </ns0:r>
+          </ns0:p>
+          <ns0:p>
+            <ns0:r>
+              <ns0:t>МДК.01.01 Дизайн - проектирование (История дизайна)</ns0:t>
+            </ns0:r>
+          </ns0:p>
+        </ns0:tc>
+        <ns0:tc>
+          <ns0:p>
+            <ns0:r>
+              <ns0:t>Селиверстова К. И. (МДК.01.01 Дизайн – проектирование)</ns0:t>
+            </ns0:r>
+          </ns0:p>
+        </ns0:tc>
+        <ns0:tc>
+          <ns0:p>
+            <ns0:r>
+              <ns0:t>503</ns0:t>
+            </ns0:r>
+          </ns0:p>
+        </ns0:tc>
+      </ns0:tr>
+    </ns0:tbl>
+  </ns0:body>
+</ns0:document>

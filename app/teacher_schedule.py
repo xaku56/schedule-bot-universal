@@ -4,7 +4,7 @@ import datetime as dt
 import re
 from typing import Any
 
-from .pdf_parser import PAIR_TIMES_DISPLAY
+from .pdf_parser import PAIR_TIMES_DISPLAY, split_teacher_names
 from .replacement_service import _pair_number, _replacement_lesson, apply_replacements
 from .schedule_service import (
     WEEKDAYS_BY_NUMBER,
@@ -33,7 +33,7 @@ def teacher_key(value: str) -> str:
 def teacher_names(value: str) -> list[str]:
     return [
         correct_teacher_name(name.strip())
-        for name in value.split("/")
+        for name in split_teacher_names(value)
         if len(teacher_key(name)) > 1 and name.strip().casefold() != "нет"
     ]
 

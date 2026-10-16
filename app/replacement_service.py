@@ -12,7 +12,7 @@ from typing import Any
 
 from defusedxml import ElementTree as ET
 
-from .pdf_parser import PAIR_TIMES_DISPLAY, normalize_group
+from .pdf_parser import PAIR_TIMES_DISPLAY, normalize_group, split_teacher_names
 from .yandex_disk import download_public_file, file_fingerprint, list_public_files
 
 W_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
@@ -24,7 +24,11 @@ logger = logging.getLogger(__name__)
 
 
 def _node_text(node: ET.Element) -> str:
-    return "".join(item.text or "" for item in node.findall(".//w:t", W_NS)).strip()
+    paragraphs = node.findall(".//w:p", W_NS) or [node]
+    return " ".join(
+        "".join(item.text or "" for item in paragraph.findall(".//w:t", W_NS)).strip()
+        for paragraph in paragraphs
+    ).strip()
 
 
 def _docx_root(content: bytes) -> ET.Element:
@@ -86,7 +90,7 @@ def _replacement_lesson(value: str) -> tuple[str, str]:
     match = re.match(r"^(.*?)\s*\((.+)\)\s*$", text)
     if not match:
         return "", text
-    return match.group(1).strip(), match.group(2).strip()
+    return "/".join(split_teacher_names(match.group(1))), match.group(2).strip()
 
 
 class ReplacementConflictError(ValueError):
