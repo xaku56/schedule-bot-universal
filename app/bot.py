@@ -16,7 +16,7 @@ from .autopost import AutopostService
 from .calendar_service import CalendarService
 from .command_guard import CommandGuard
 from .config import Config
-from .logging_config import diagnostic_context, log_diagnostic, safe_traceback
+from .logging_config import safe_traceback
 from .replacement_service import ReplacementRepository
 from .schedule_service import ScheduleRepository
 from .storage import Storage
@@ -39,7 +39,7 @@ class Bot:
         self.storage = Storage(config.data_dir)
         self.schedules = ScheduleRepository(self.storage, config.schedule_url)
         self.replacements = ReplacementRepository(config.replacements_url)
-        self.telegram = TelegramAPI(config.token, ipv4_only=config.telegram_ipv4_only)
+        self.telegram = TelegramAPI(config.token)
         self.sender = TelegramSendQueue(
             self.telegram,
             messages_per_second=config.telegram_messages_per_second,
@@ -174,28 +174,14 @@ class Bot:
             self._refresh_future = self.executor.submit(self._refresh_task)
             return True
 
-    def _handle_update_safely(
-        self, update: dict[str, Any], received_at: float | None = None
-    ) -> None:
-        started = time.perf_counter()
-        update_id = update.get("update_id")
-        context_token = diagnostic_context.set(
-            {"update_id": update_id if isinstance(update_id, int) else None}
-        )
-        status = "ok"
-        log_diagnostic(
-            "update_handler_started",
-            queue_wait_ms=round((started - received_at) * 1000, 1)
-            if received_at is not None
-            else None,
-        )
+    def _handle_update_safely(self, update: dict[str, Any]) -> None:
         try:
             self.handlers.handle_update(update)
         except Exception as error:  # noqa: BLE001 - Do not log user-controlled exception text.
-            status = "failed"
+            update_id = update.get("update_id")
             logger.error(
                 "Telegram update failed update_id=%s error_type=%s traceback=%s",
-                (diagnostic_context.get() or {}).get("update_id"),
+                update_id if isinstance(update_id, int) else None,
                 type(error).__name__,
                 safe_traceback(error.__traceback__),
             )
@@ -218,29 +204,12 @@ class Bot:
                         type(send_error).__name__,
                         safe_traceback(send_error.__traceback__),
                     )
-        finally:
-            log_diagnostic(
-                "update_handler_finished",
-                status=status,
-                elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
-            )
-            diagnostic_context.reset(context_token)
 
     def _submit_update(self, update: dict[str, Any]) -> None:
-        received_at = time.perf_counter()
-        update_id = update.get("update_id")
-        metadata = {"update_id": update_id if isinstance(update_id, int) else None}
-        log_diagnostic(
-            "update_received",
-            **metadata,
-            kind="callback" if update.get("callback_query") else "message",
-        )
         key = self.command_guard.admit(update, time.monotonic())
         if key is None:
-            log_diagnostic("update_dropped", **metadata, reason="guard")
             return
         if not self._task_slots.acquire(blocking=False):
-            log_diagnostic("update_dropped", **metadata, reason="workers_full")
             self.command_guard.finish(key)
             return
 
@@ -249,9 +218,7 @@ class Bot:
             self._task_slots.release()
 
         try:
-            future = self.executor.submit(
-                self._handle_update_safely, update, received_at
-            )
+            future = self.executor.submit(self._handle_update_safely, update)
         except Exception:
             self.command_guard.finish(key)
             self._task_slots.release()

@@ -46,8 +46,6 @@ class Config:
     telegram_queue_size: int = 1000
     calendar_public_url: str = ""
     calendar_port: int = 8765
-    diagnostics_enabled: bool = True
-    telegram_ipv4_only: bool = False
 
     @classmethod
     def from_env(cls) -> Config:
@@ -100,8 +98,6 @@ class Config:
             worker_count=max(2, min(int(os.getenv("BOT_WORKERS", "4")), 16)),
             expected_semester=os.getenv("EXPECTED_SEMESTER", "").strip() or None,
             log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
-            diagnostics_enabled=_env_bool("DIAGNOSTICS_ENABLED", True),
-            telegram_ipv4_only=_env_bool("TELEGRAM_IPV4_ONLY", False),
             calendar_public_url=calendar_url,
             calendar_port=calendar_port,
             telegram_messages_per_second=max(
