@@ -64,49 +64,32 @@ class TelegramTransportTests(unittest.TestCase):
             urllib.request._opener,
         )
         proxies = {"https": "http://proxy.invalid:8080"}
-        for ipv4_only in (False, True):
-            with patch("urllib.request.getproxies", return_value=proxies):
-                api = TelegramAPI("test", ipv4_only=ipv4_only)
-            handler = next(
-                h for h in api._opener.handlers if isinstance(h, _TelegramHTTPSHandler)
-            )
-            proxy = next(
-                h
-                for h in api._opener.handlers
-                if isinstance(h, urllib.request.ProxyHandler)
-            )
-            self.assertEqual(proxy.proxies, proxies)
-            self.assertEqual(handler._context.verify_mode, ssl.CERT_REQUIRED)
-            self.assertTrue(handler._context.check_hostname)
-            connection = _TelegramHTTPSConnection(
-                "api.telegram.org", ipv4_only=ipv4_only, diagnostic_metadata={}
-            )
-            self.assertIs(
-                connection._create_connection,
-                _create_ipv4_connection if ipv4_only else factory,
-            )
+        with patch("urllib.request.getproxies", return_value=proxies):
+            api = TelegramAPI("test")
+        handler = next(
+            h for h in api._opener.handlers if isinstance(h, _TelegramHTTPSHandler)
+        )
+        proxy = next(
+            h
+            for h in api._opener.handlers
+            if isinstance(h, urllib.request.ProxyHandler)
+        )
+        self.assertEqual(proxy.proxies, proxies)
+        self.assertEqual(handler._context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(handler._context.check_hostname)
+        connection = _TelegramHTTPSConnection("api.telegram.org")
+        self.assertIs(connection._create_connection, _create_ipv4_connection)
         self.assertIs(socket.getaddrinfo, resolver)
         self.assertIs(socket.create_connection, factory)
         self.assertIs(urllib.request._opener, global_opener)
 
-    def test_requests_log_actual_family_and_keep_tls_hostname_and_proxy_tunnel(
-        self,
-    ) -> None:
-        token = "123456789:" + "A" * 35
+    def test_requests_use_ipv4_keep_tls_hostname_and_proxy_tunnel(self) -> None:
         secret = "PRIVATE_MESSAGE_AND_PROXY_PASSWORD"
         body = json.dumps({"ok": True, "result": []}).encode()
-        for ipv4_only, family, proxies in (
-            (True, socket.AF_INET, {}),
-            (False, socket.AF_INET6, {}),
-            (
-                True,
-                socket.AF_INET,
-                {"https": f"http://user:{secret}@proxy.invalid:8080"},
-            ),
-        ):
-            with self.subTest(ipv4_only=ipv4_only, proxy=bool(proxies)):
+        for proxies in ({}, {"https": f"http://user:{secret}@proxy.invalid:8080"}):
+            with self.subTest(proxy=bool(proxies)):
                 with patch("urllib.request.getproxies", return_value=proxies):
-                    api = TelegramAPI(token, ipv4_only=ipv4_only)
+                    api = TelegramAPI("test")
                 handler = next(
                     h
                     for h in api._opener.handlers
@@ -116,7 +99,7 @@ class TelegramTransportTests(unittest.TestCase):
                 raw.makefile.return_value = io.BytesIO(
                     b"HTTP/1.1 200 Connection established\r\n\r\n"
                 )
-                secured.family = family
+                secured.family = socket.AF_INET
                 secured.makefile.return_value = io.BytesIO(
                     b"HTTP/1.1 200 OK\r\nContent-Length: "
                     + str(len(body)).encode()
@@ -125,14 +108,11 @@ class TelegramTransportTests(unittest.TestCase):
                 )
                 handler._context = MagicMock()
                 handler._context.wrap_socket.return_value = secured
-                factory_path = (
-                    "app.telegram_api._create_ipv4_connection"
-                    if ipv4_only
-                    else "app.telegram_api.socket.create_connection"
-                )
                 with (
-                    patch(factory_path, return_value=raw) as connect,
-                    self.assertLogs("app.diagnostics", "INFO") as logs,
+                    patch(
+                        "app.telegram_api._create_ipv4_connection", return_value=raw
+                    ) as connect,
+                    self.assertNoLogs("app", "INFO"),
                 ):
                     self.assertEqual(
                         api.request("sendMessage", chat_id=1, text=secret), []
@@ -144,49 +124,25 @@ class TelegramTransportTests(unittest.TestCase):
                 handler._context.wrap_socket.assert_called_once_with(
                     raw, server_hostname="api.telegram.org"
                 )
-                connected = next(
-                    record
-                    for record in logs.records
-                    if record.getMessage().startswith("telegram_connected ")
-                )
-                text = connected.getMessage()
-                self.assertIn(
-                    "ip_family=" + ("IPv4" if family == socket.AF_INET else "IPv6"),
-                    text,
-                )
-                self.assertIn(f"via_proxy={bool(proxies)}", text)
-                self.assertIn("request_id=", text)
-                self.assertIn("attempt=1", text)
-                self.assertIn("method=sendMessage", text)
-                for private in (token, secret):
-                    self.assertNotIn(private, "\n".join(logs.output))
 
-    def test_certificate_failure_closes_connection_and_keeps_logs_safe(self) -> None:
-        secret = "PRIVATE_TLS_EXCEPTION"
-        token = "123456789:" + "B" * 35
+    def test_certificate_failure_closes_connection(self) -> None:
         with patch("urllib.request.getproxies", return_value={}):
-            api = TelegramAPI(token, ipv4_only=True)
+            api = TelegramAPI("test")
         handler = next(
             h for h in api._opener.handlers if isinstance(h, _TelegramHTTPSHandler)
         )
         handler._context = MagicMock()
         handler._context.wrap_socket.side_effect = ssl.SSLCertVerificationError(
-            secret + token
+            "private"
         )
         raw = MagicMock()
         with (
             patch("app.telegram_api._create_ipv4_connection", return_value=raw),
-            self.assertLogs("app.diagnostics", "INFO") as logs,
+            self.assertNoLogs("app", "INFO"),
             self.assertRaises(urllib.error.URLError),
         ):
             api.updates(None)
         raw.close.assert_called_once()
-        text = "\n".join(logs.output)
-        self.assertIn("telegram_request_failed", text)
-        self.assertIn("SSLCertVerificationError", text)
-        self.assertNotIn("telegram_connected", text)
-        self.assertNotIn(secret, text)
-        self.assertNotIn(token, text)
 
     def test_command_menu_contains_supported_commands_and_argument_hints(self) -> None:
         api = TelegramAPI("test")
