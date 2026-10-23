@@ -156,6 +156,15 @@ class TelegramTransportTests(unittest.TestCase):
         self.assertTrue(all("/" + item["command"] in COMMANDS for item in commands))
         self.assertTrue(all(1 <= len(item["description"]) <= 256 for item in commands))
         self.assertIn("DD.MM.YYYY", COMMAND_DESCRIPTIONS["date"])
-        self.assertIn("short", COMMAND_DESCRIPTIONS["calendar_format"])
-        self.assertIn("full", COMMAND_DESCRIPTIONS["calendar_format"])
+        self.assertIn("menu", COMMAND_DESCRIPTIONS)
+        for command in (
+            "week",
+            "autopost_on",
+            "autopost_off",
+            "calendar",
+            "calendar_format",
+            "calendar_off",
+        ):
+            self.assertNotIn(command, COMMAND_DESCRIPTIONS)
+            self.assertNotIn("/" + command, COMMANDS)
         self.assertNotIn("refresh", COMMAND_DESCRIPTIONS)

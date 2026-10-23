@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 from app.bot import Bot
 from app.config import Config
 from app.telegram_api import TelegramAPIError, TelegramRateLimitError
+from tests.menu_helpers import menu_actions
 
 
 class FakeTelegram:
@@ -26,6 +27,11 @@ class FakeSender:
 
     def send_message(
         self, _chat_id: int, text: str, *_args: object, **_kwargs: object
+    ) -> None:
+        self.messages.append(text)
+
+    def edit_message(
+        self, _chat_id: int, _message_id: int, text: str, *_args: object
     ) -> None:
         self.messages.append(text)
 
@@ -164,7 +170,7 @@ class BotTests(unittest.TestCase):
             bot = self.make_bot(directory)
             update = {
                 "message": {
-                    "text": "/week",
+                    "text": "/today",
                     "from": {"id": 42},
                     "chat": {"id": 42},
                 }
@@ -309,9 +315,9 @@ class BotTests(unittest.TestCase):
                 self.assertEqual(
                     bot.storage.get_binding(-1001, 10)["target_name"], "11 ис"
                 )
-                bot.handlers.handle_message({**message, "text": "/autopost_on"})
+                menu_actions(bot, message, "autopost", "autopost:on")
                 self.assertEqual(bot.storage.get_binding(-1001, 10)["autopost"], 1)
-                bot.handlers.handle_message({**message, "text": "/autopost_off"})
+                menu_actions(bot, message, "autopost", "autopost:off")
                 self.assertEqual(bot.storage.get_binding(-1001, 10)["autopost"], 0)
                 self.assertIsNone(bot.storage.get_binding(-1001, None))
                 telegram.get_chat_member.assert_not_called()
@@ -538,13 +544,10 @@ class BotTests(unittest.TestCase):
                     return_value=bot.handlers.schedules
                 )
                 bot.handlers.replacements.apply_for_date = MagicMock()
-                message = {
-                    "chat": {"id": 42, "type": "private"},
-                    "from": {"id": 42},
-                    "text": "/week",
-                }
 
-                bot.handlers.handle_message(message)
+                bot.handlers._send_week(
+                    42, None, "11 ис", "group", dt.datetime.now(bot.timezone)
+                )
 
                 self.assertEqual(bot.handlers.schedules.schedule_for.call_count, 12)
                 bot.handlers.replacements.apply_for_date.assert_not_called()
@@ -559,7 +562,9 @@ class BotTests(unittest.TestCase):
 
                 include_saturday = False
                 sender.messages.clear()
-                bot.handlers.handle_message(message)
+                bot.handlers._send_week(
+                    42, None, "11 ис", "group", dt.datetime.now(bot.timezone)
+                )
                 self.assertEqual(len(sender.messages), 5)
             finally:
                 bot.close()

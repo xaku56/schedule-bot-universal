@@ -182,8 +182,8 @@ class TelegramAPI:
         text: str,
         thread_id: int | None = None,
         reply_markup: dict[str, Any] | None = None,
-    ) -> None:
-        self.request(
+    ) -> dict[str, Any]:
+        return self.request(
             "sendMessage",
             retry_rate_limit=False,
             chat_id=chat_id,

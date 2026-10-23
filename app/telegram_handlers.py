@@ -8,7 +8,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from .command_guard import COMMANDS, parse_command
+from .command_guard import COMMANDS, MOVED_COMMANDS, parse_command
 from .config import Config
 from .logging_config import safe_traceback
 from .replacement_service import ReplacementRepository
@@ -27,6 +27,7 @@ from .teacher_schedule import (
     teacher_names,
 )
 from .telegram_api import TelegramAPI, TelegramAPIError
+from .telegram_menu import TelegramMenu
 from .telegram_queue import TelegramSendQueue
 
 logger = logging.getLogger(__name__)
@@ -80,21 +81,7 @@ class TelegramHandlers:
         self.sender = sender
         self.timezone = timezone
         self.validate_semester = validate_semester
-
-    def _send_setup(self, chat_id: int, thread_id: int | None) -> None:
-        self.sender.send_message(
-            chat_id,
-            "Выбери группу или преподавателя. В чате с темами настройку нужно выполнять прямо в нужной теме.",
-            thread_id,
-            {
-                "inline_keyboard": [
-                    [
-                        {"text": "Группа", "callback_data": "setup:groups"},
-                        {"text": "Преподаватель", "callback_data": "setup:teacher"},
-                    ]
-                ]
-            },
-        )
+        self.menu = TelegramMenu(self)
 
     def _teachers(self) -> list[str]:
         names = {teacher_key(name): name for name in available_teachers(self.schedules)}
@@ -201,39 +188,58 @@ class TelegramHandlers:
         target_type: str = "group",
         include_replacements: bool = True,
     ) -> None:
+        self.sender.send_message(
+            chat_id,
+            self._date_text(
+                name,
+                target_date,
+                target_type=target_type,
+                include_replacements=include_replacements,
+            ),
+            thread_id,
+        )
+
+    def _date_text(
+        self,
+        name: str,
+        target_date: dt.date,
+        *,
+        target_type: str = "group",
+        include_replacements: bool = True,
+    ) -> str:
         schedule, note = self._schedule(
             name,
             target_date,
             target_type=target_type,
             include_replacements=include_replacements,
         )
-        message = (
+        return (
             format_teacher_schedule(schedule, note)
             if target_type == "teacher"
             else format_schedule(schedule, note)
         )
-        self.sender.send_message(chat_id, message, thread_id)
 
     def _send_help(self, chat_id: int, thread_id: int | None) -> None:
         self.sender.send_message(
             chat_id,
             "<b>Команды расписания</b>\n"
+            "/menu — главное меню.\n"
             "/setup — выбрать группу или преподавателя для чата или темы.\n"
             "/today — расписание на сегодня с опубликованными заменами.\n"
             "/tomorrow — расписание на завтра с опубликованными заменами.\n"
             "/date DD.MM.YYYY — расписание на дату, например /date 16.09.2026.\n"
-            "/week — основное расписание без замен: оба варианта недели, "
+            "Кнопка «Неделя» — основное расписание без замен: оба варианта недели, "
             "по сообщению на день. Ч — числитель, З — знаменатель; "
             "суббота показывается при наличии пар.\n\n"
-            "<b>Настройки</b>\n"
-            "/autopost_on — присылать расписание на завтра после появления "
+            "<b>Главное меню</b>\n"
+            "«Другое расписание» — разовый выбор группы или преподавателя и даты "
+            "с заменами, без изменения основных настроек.\n"
+            "«Автоотправка» — присылать расписание на завтра после появления "
             "файла замен, даже если для выбранной группы или преподавателя замен нет. "
             "Повторно — только при изменении итогового расписания.\n"
-            "/autopost_off — отключить автоотправку.\n"
-            "/calendar — ваша ссылка календаря выбранной группы или преподавателя.\n"
-            "/calendar_format short — только фамилия, без описания, только для вас.\n"
-            "/calendar_format full — вернуть длинные заголовки (по умолчанию).\n"
-            "/calendar_off — отозвать ваши ссылки календарей этого чата/темы.\n"
+            "«Календарь» — личная ссылка, выбор полного или короткого формата "
+            "и отзыв своих ссылок этого чата/темы. "
+            "В коротком формате — только фамилия, без описания; место проведения сохраняется.\n"
             "/help — эта справка.\n\n"
             "Выбор расписания и автоотправка в личном чате — только для вас. "
             "В группах настройки общие для чата или темы. "
@@ -250,15 +256,7 @@ class TelegramHandlers:
     ) -> None:
         title_format = argument.strip().casefold()
         if title_format not in {"short", "full"}:
-            self.sender.send_message(
-                chat_id,
-                "/calendar_format short — только фамилия, например «Зыбина», без описания.\n"
-                "Кабинет остаётся в месте проведения.\n"
-                "/calendar_format full — длинные заголовки (по умолчанию).\n"
-                "Настройка действует только на ваши личные ссылки из /calendar.",
-                thread_id,
-            )
-            return
+            raise ValueError("Неизвестный формат календаря")
         self.storage.set_calendar_format(user_id, title_format)
         label = (
             "только фамилия, без описания"
@@ -271,7 +269,7 @@ class TelegramHandlers:
             "Других пользователей это не затрагивает. "
             "Подключать вашу подписку заново не нужно: изменения появятся "
             "при обновлении календаря. Для старой общей ссылки получите "
-            "личную через /calendar.",
+            "личную через меню «Календарь» → «Получить ссылку».",
             thread_id,
         )
 
@@ -285,7 +283,11 @@ class TelegramHandlers:
             return
         subscription = self.storage.calendar_subscription(chat_id, thread_id, user_id)
         if subscription is None:
-            self._send_setup(chat_id, thread_id)
+            self.sender.send_message(
+                chat_id,
+                "Для подписки сначала нужен основной выбор расписания: /setup.",
+                thread_id,
+            )
             return
         name = str(subscription["target_name"])
         label = (
@@ -298,8 +300,7 @@ class TelegramHandlers:
             "В этом календаре только выбранная группа или преподаватель.\n"
             "Пары на завтра публикуются после обнаружения файла замен. "
             "При изменении ваших пар календарь обновляется без дублей.\n"
-            "Это ваша личная ссылка. /calendar_format short — только фамилия, без описания, "
-            "/calendar_format full — длинные заголовки.\n\n"
+            "Это ваша личная ссылка. Формат заголовков меняется в меню «Календарь».\n\n"
             "iPhone: Календарь → Календари → Добавить календарь → "
             "Добавить подписной календарь. Вставьте этот адрес:\n"
             f"<code>{html.escape(url)}</code>\n\n"
@@ -307,8 +308,9 @@ class TelegramHandlers:
             "Используйте подписку, а не разовый импорт файла.\n"
             "До первой публикации календарь может быть пустым. "
             "Скорость обновления зависит от приложения.\n"
-            "Ссылка закреплена за этим выбором. После смены /setup запросите новую "
-            "через /calendar и удалите старую подписку в телефоне. "
+            "Ссылка закреплена за этим выбором. После смены /setup новая ссылка "
+            "доступна в меню «Календарь» → «Получить ссылку». "
+            "Старую подписку можно удалить в телефоне. "
             "Ссылка даёт доступ к расписанию — передавайте её только намеренно.",
             thread_id,
         )
@@ -354,34 +356,6 @@ class TelegramHandlers:
                 thread_id,
             )
 
-    def _handle_calendar(
-        self, command: str, argument: str, message: dict[str, Any]
-    ) -> None:
-        chat_id = int(message["chat"]["id"])
-        thread_id = message.get("message_thread_id")
-        user = message.get("from") or {}
-        user_id = int(user.get("id", 0))
-        if user_id <= 0 or user.get("is_bot") or message.get("sender_chat"):
-            self.sender.send_message(
-                chat_id,
-                "Для личного календаря выполните команду от своего имени, "
-                "а не анонимно или от имени канала.",
-                thread_id,
-            )
-            return
-        if command == "/calendar_format":
-            self._set_calendar_format(user_id, argument, chat_id, thread_id)
-        elif command == "/calendar":
-            self._send_calendar(user_id, chat_id, thread_id)
-        else:
-            self.storage.revoke_calendars(chat_id, thread_id, user_id)
-            self.sender.send_message(
-                chat_id,
-                "Ваши личные ссылки календарей этого чата/темы отозваны. "
-                "Удалите подписки в календаре телефона. /calendar выдаст новую ссылку.",
-                thread_id,
-            )
-
     def handle_message(self, message: dict[str, Any]) -> None:
         chat = message.get("chat") or {}
         if "id" not in chat:
@@ -389,21 +363,23 @@ class TelegramHandlers:
         chat_id = int(chat["id"])
         thread_id = message.get("message_thread_id")
         command, argument = parse_command(str(message.get("text", "")))
+        if self.menu.is_date_reply(message):
+            self.menu.handle_reply(message)
+            return
+        if command in MOVED_COMMANDS:
+            self.menu.open(message, notice="Эта функция перенесена на кнопки меню.")
+            return
         if command not in COMMANDS:
             return
-        if command in {"/help", "/start"}:
+        if command == "/help":
             self._send_help(chat_id, thread_id)
-            if command == "/help":
-                return
-        if command in {"/start", "/setup", "/group", "/groups"}:
-            self._send_setup(chat_id, thread_id)
             return
-        if command in {"/calendar", "/calendar_format", "/calendar_off"}:
-            self._handle_calendar(command, argument, message)
+        if command in {"/start", "/menu", "/setup", "/group", "/groups"}:
+            self.menu.open(message, setup=command in {"/setup", "/group", "/groups"})
             return
         binding = self.storage.get_binding(chat_id, thread_id)
         if binding is None:
-            self._send_setup(chat_id, thread_id)
+            self.menu.open(message, setup=True)
             return
         name = str(binding["target_name"])
         target_type = str(binding["target_type"])
@@ -415,18 +391,6 @@ class TelegramHandlers:
                 else now.date() + dt.timedelta(days=command == "/tomorrow")
             )
             self._send_date(chat_id, thread_id, name, date, target_type=target_type)
-        elif command == "/week":
-            self._send_week(chat_id, thread_id, name, target_type, now)
-        elif command == "/autopost_on":
-            self.storage.set_autopost(chat_id, thread_id, True)
-            self.sender.send_message(
-                chat_id,
-                f"Автоотправка включена для <b>{html.escape(name)}</b> в этом чате/теме.",
-                thread_id,
-            )
-        elif command == "/autopost_off":
-            self.storage.set_autopost(chat_id, thread_id, False)
-            self.sender.send_message(chat_id, "Автоотправка выключена.", thread_id)
 
     def handle_callback(self, callback: dict[str, Any]) -> None:
         callback_id = str(callback.get("id", ""))
@@ -445,6 +409,9 @@ class TelegramHandlers:
         message = callback.get("message") or {}
         chat = message.get("chat") or {}
         if "id" not in chat:
+            return
+        if str(callback.get("data", "")).startswith("m:"):
+            self.menu.handle_callback(callback)
             return
         chat_id = int(chat["id"])
         thread_id = message.get("message_thread_id")
@@ -502,7 +469,7 @@ class TelegramHandlers:
                 chat_id,
                 f"Группа <b>{html.escape(group.upper())}</b> привязана к этой теме.\n"
                 "Проверь: /today или /tomorrow\n"
-                "Автоотправка: /autopost_on",
+                "Автоотправка и календарь: /menu",
                 thread_id,
             )
             return
@@ -526,7 +493,7 @@ class TelegramHandlers:
             self.sender.send_message(
                 chat_id,
                 f"Преподаватель <b>{html.escape(teacher)}</b> привязан к этой теме.\n"
-                "Проверь: /today или /tomorrow\nАвтоотправка: /autopost_on",
+                "Проверь: /today или /tomorrow\nАвтоотправка и календарь: /menu",
                 thread_id,
             )
 

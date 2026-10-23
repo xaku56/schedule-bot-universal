@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import MagicMock
 
 from app.telegram_queue import TelegramSendQueue
 
@@ -35,6 +36,15 @@ class FakeTelegramAPI:
 
 
 class TelegramQueueTests(unittest.TestCase):
+    def test_sent_message_id_is_returned_for_menu_and_date_reply_matching(self) -> None:
+        api = MagicMock()
+        api.send_message.return_value = {"message_id": 42, "text": "menu"}
+        sender = TelegramSendQueue(api, messages_per_second=10000, per_chat_interval=0)
+        try:
+            self.assertEqual(sender.send_message(1, "menu")["message_id"], 42)
+        finally:
+            sender.close()
+
     def test_messages_keep_fifo_order(self) -> None:
         api = FakeTelegramAPI()
         sender = TelegramSendQueue(

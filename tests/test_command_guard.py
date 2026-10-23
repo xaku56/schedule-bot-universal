@@ -17,15 +17,36 @@ def message(text: str, user: int = 1, chat: int = 1, thread: int = 0) -> dict:
 
 
 class CommandGuardTests(unittest.TestCase):
-    def test_calendar_format_can_switch_without_duplicate_suppression(self) -> None:
+    def test_date_replies_are_scoped_to_the_prompt(self) -> None:
         guard = CommandGuard()
-        key = guard.admit(message("/calendar_format short"), 0)
+        update = message("26.10.2026")
+        update["message"]["reply_to_message"] = {"message_id": 20}
+        first = guard.admit(update, 0, date_reply=True)
+        self.assertIsNotNone(first)
+        self.assertIsNone(guard.admit(update, 1, date_reply=True))
+        update["message"]["reply_to_message"]["message_id"] = 21
+        self.assertIsNotNone(guard.admit(update, 1, date_reply=True))
+
+    def test_menu_clicks_are_serialized_and_actions_have_separate_duplicate_keys(
+        self,
+    ) -> None:
+        guard = CommandGuard()
+        update = {
+            "callback_query": {
+                "from": {"id": 1},
+                "message": {"chat": {"id": 1}},
+                "data": "m:0123456789ab:calendar:short",
+            }
+        }
+        key = guard.admit(update, 0)
+        self.assertIsNotNone(key)
+        update["callback_query"]["data"] = "m:0123456789ab:calendar:full"
+        self.assertIsNone(guard.admit(update, 1))
+        guard.finish(key)
+        key = guard.admit(update, 1)
         self.assertIsNotNone(key)
         guard.finish(key)
-        key = guard.admit(message("/calendar_format full"), 1)
-        self.assertIsNotNone(key)
-        guard.finish(key)
-        self.assertIsNone(guard.admit(message("/calendar_format full"), 1.5))
+        self.assertIsNone(guard.admit(update, 1.5))
 
     def test_burst_refills_and_users_are_independent(self) -> None:
         guard = CommandGuard()
@@ -37,19 +58,19 @@ class CommandGuardTests(unittest.TestCase):
         self.assertIsNotNone(guard.admit(message("/today", user=2), 1.9))
         self.assertIsNotNone(guard.admit(message("/tomorrow"), 2))
 
-    def test_duplicates_and_active_week_are_scoped_to_topic(self) -> None:
+    def test_duplicates_and_active_schedule_are_scoped_to_topic(self) -> None:
         guard = CommandGuard()
-        key = guard.admit(message("/week"), 0)
+        key = guard.admit(message("/today"), 0)
         for now in range(1, 100):
-            self.assertIsNone(guard.admit(message("/week", user=2), now))
-        self.assertIsNotNone(guard.admit(message("/week", user=2, thread=9), 100))
-        self.assertIsNotNone(guard.admit(message("/week", user=3, chat=2), 100))
+            self.assertIsNone(guard.admit(message("/today", user=2), now))
+        self.assertIsNotNone(guard.admit(message("/today", user=2, thread=9), 100))
+        self.assertIsNotNone(guard.admit(message("/today", user=3, chat=2), 100))
         guard.finish(key)
-        key = guard.admit(message("/week"), 100)
+        key = guard.admit(message("/today"), 100)
         self.assertIsNotNone(key)
         guard.finish(key)
-        self.assertIsNone(guard.admit(message("/WEEK@ExampleBot"), 102))
-        self.assertIsNotNone(guard.admit(message("/week"), 103))
+        self.assertIsNone(guard.admit(message("/TODAY@ExampleBot"), 102))
+        self.assertIsNotNone(guard.admit(message("/today"), 103))
 
     def test_buttons_allow_setup_flow_and_limit_repeated_clicks(self) -> None:
         guard = CommandGuard()

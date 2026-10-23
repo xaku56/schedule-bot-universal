@@ -23,7 +23,7 @@ class _QueuedMessage:
     text: str = field(compare=False)
     thread_id: int | None = field(compare=False)
     reply_markup: dict[str, Any] | None = field(compare=False)
-    result: Future[None] = field(compare=False)
+    result: Future[Any] = field(compare=False)
     message_id: int | None = field(default=None, compare=False)
     attempts: int = field(default=0, compare=False)
     ready_at: float = field(default=0.0, compare=False)
@@ -75,7 +75,7 @@ class TelegramSendQueue:
         message_id: int | None = None,
         *,
         timeout: float = 10,
-    ) -> Future[None]:
+    ) -> Future[Any]:
         deadline = time.monotonic() + timeout
         with self._condition:
             while self._outstanding >= self._max_size and not self._closed:
@@ -85,7 +85,7 @@ class TelegramSendQueue:
                 self._condition.wait(remaining)
             if self._closed:
                 raise RuntimeError("Telegram send queue is closed")
-            result: Future[None] = Future()
+            result: Future[Any] = Future()
             item = _QueuedMessage(
                 priority,
                 next(self._sequence),
@@ -109,8 +109,8 @@ class TelegramSendQueue:
         reply_markup: dict[str, Any] | None = None,
         *,
         priority: int = 0,
-    ) -> None:
-        self._enqueue(chat_id, text, thread_id, reply_markup, priority).result()
+    ) -> dict[str, Any]:
+        return self._enqueue(chat_id, text, thread_id, reply_markup, priority).result()
 
     def edit_message(
         self,
@@ -169,9 +169,10 @@ class TelegramSendQueue:
 
     def _deliver(self, item: _QueuedMessage) -> None:
         error: Exception | None = None
+        response = None
         try:
             if item.message_id is None:
-                self.api.send_message(
+                response = self.api.send_message(
                     item.chat_id,
                     item.text,
                     item.thread_id,
@@ -208,7 +209,7 @@ class TelegramSendQueue:
                 }
             self._condition.notify_all()
         if error is None:
-            item.result.set_result(None)
+            item.result.set_result(response)
         else:
             logger.warning(
                 "Telegram send failed chat_id=%s thread_id=%s error_type=%s traceback=%s",

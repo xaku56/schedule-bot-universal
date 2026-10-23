@@ -7,13 +7,8 @@ COMMAND_DESCRIPTIONS = {
     "today": "Расписание на сегодня с заменами",
     "tomorrow": "Расписание на завтра с заменами",
     "date": "Расписание на дату: /date DD.MM.YYYY",
-    "week": "Основное расписание: числитель и знаменатель",
+    "menu": "Главное меню и настройки",
     "setup": "Выбрать группу или преподавателя",
-    "autopost_on": "Включить автоотправку расписания",
-    "autopost_off": "Отключить автоотправку расписания",
-    "calendar": "Получить личную ссылку календаря",
-    "calendar_format": "Формат календаря: /calendar_format short или full",
-    "calendar_off": "Отозвать свои ссылки календаря этого чата или темы",
     "help": "Справка по командам",
 }
 COMMANDS = {f"/{command}" for command in COMMAND_DESCRIPTIONS} | {
@@ -21,7 +16,15 @@ COMMANDS = {f"/{command}" for command in COMMAND_DESCRIPTIONS} | {
     "/group",
     "/groups",
 }
-SCHEDULE_COMMANDS = {"/today", "/tomorrow", "/date", "/week"}
+MOVED_COMMANDS = {
+    "/week",
+    "/autopost_on",
+    "/autopost_off",
+    "/calendar",
+    "/calendar_format",
+    "/calendar_off",
+}
+SCHEDULE_COMMANDS = {"/today", "/tomorrow", "/date"}
 
 
 def parse_command(text: str) -> tuple[str, str]:
@@ -43,7 +46,9 @@ class CommandGuard:
         self._active: set[tuple] = set()
         self._cleaned_at = 0.0
 
-    def admit(self, update: dict[str, Any], now: float) -> tuple | None:
+    def admit(
+        self, update: dict[str, Any], now: float, *, date_reply: bool = False
+    ) -> tuple | None:
         callback = update.get("callback_query")
         message = (callback or {}).get("message") or update.get("message") or {}
         user_id = ((callback or message).get("from") or {}).get("id")
@@ -59,18 +64,42 @@ class CommandGuard:
                 "setup:groups",
                 "setup:teacher",
             } and not argument.startswith(
-                ("course:", "group:", "teacher:", "teachers:")
+                ("course:", "group:", "teacher:", "teachers:", "m:")
             ):
                 return None
         else:
             command, argument = parse_command(str(message.get("text", "")))
-            if command not in COMMANDS:
+            if command not in COMMANDS | MOVED_COMMANDS and not date_reply:
                 return None
-            if command not in {"/date", "/calendar_format"}:
+            if date_reply:
+                command = "date_reply"
+                argument = (
+                    (message.get("reply_to_message") or {}).get("message_id"),
+                    str(message.get("text", "")),
+                )
+            elif command != "/date":
                 argument = ""
         request = (chat_id, message.get("message_thread_id") or 0, command, argument)
         recent_key = (user_id, *request)
-        active_key = request if command in SCHEDULE_COMMANDS else recent_key
+        if date_reply:
+            active_key = (
+                user_id,
+                chat_id,
+                message.get("message_thread_id") or 0,
+                "date_reply",
+                argument[0],
+            )
+        elif callback and argument.startswith("m:"):
+            # Serialize clicks on one menu before they occupy worker slots.
+            active_key = (
+                user_id,
+                chat_id,
+                message.get("message_thread_id") or 0,
+                "menu",
+                argument.split(":", 2)[1],
+            )
+        else:
+            active_key = request if command in SCHEDULE_COMMANDS else recent_key
         with self._lock:
             if now - self._cleaned_at >= 60:
                 self._users = {k: v for k, v in self._users.items() if now - v[1] < 60}

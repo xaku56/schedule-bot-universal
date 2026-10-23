@@ -206,7 +206,11 @@ class Bot:
                     )
 
     def _submit_update(self, update: dict[str, Any]) -> None:
-        key = self.command_guard.admit(update, time.monotonic())
+        key = self.command_guard.admit(
+            update,
+            time.monotonic(),
+            date_reply=self.handlers.menu.is_date_reply(update.get("message") or {}),
+        )
         if key is None:
             return
         if not self._task_slots.acquire(blocking=False):

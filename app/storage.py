@@ -219,7 +219,15 @@ class Storage:
                 (chat_id, thread_id or 0),
             ).fetchone()
 
-    def set_autopost(self, chat_id: int, thread_id: int | None, enabled: bool) -> bool:
+    def set_autopost(
+        self,
+        chat_id: int,
+        thread_id: int | None,
+        enabled: bool,
+        *,
+        expected_target: tuple[str, str] | None = None,
+    ) -> bool:
+        target_type, target_name = expected_target or (None, None)
         with self.connect() as db:
             cursor = db.execute(
                 """
@@ -229,8 +237,18 @@ class Storage:
                     autopost_last_error=CASE WHEN ?=1 THEN NULL ELSE autopost_last_error END,
                     updated_at=CURRENT_TIMESTAMP
                 WHERE chat_id=? AND thread_id=?
+                  AND (? IS NULL OR (target_type=? AND target_name=?))
                 """,
-                (int(enabled), int(enabled), int(enabled), chat_id, thread_id or 0),
+                (
+                    int(enabled),
+                    int(enabled),
+                    int(enabled),
+                    chat_id,
+                    thread_id or 0,
+                    target_type,
+                    target_type,
+                    target_name,
+                ),
             )
             return cursor.rowcount > 0
 

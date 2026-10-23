@@ -18,6 +18,7 @@ from app.calendar_service import CalendarService, calendar_events, render_calend
 from app.config import Config
 from app.schedule_service import ScheduleRepository
 from app.storage import Storage
+from tests.menu_helpers import menu_actions
 
 ZONE = dt.timezone(dt.timedelta(hours=4))
 DAY = dt.date(2026, 10, 7)
@@ -823,20 +824,18 @@ class CalendarTests(unittest.TestCase):
             "from": {"id": 42},
             "text": "/calendar",
         }
-        bot.handlers.handle_message(message)
+        menu_actions(bot, message, "calendar", "calendar:link")
         text = bot.handlers.sender.send_message.call_args.args[1]
         token = self.storage.calendar_subscription(42, None, 42)["token"]
         self.assertIn(token, text)
         self.assertNotEqual(token, self.token)
         self.assertNotIn("22:00", text)
         self.assertIn("Группа: 11 ис", text)
-        message["text"] = "/calendar_off"
-        bot.handlers.handle_message(message)
+        menu_actions(bot, message, "calendar", "calendar:revoke", "calendar:confirm")
         self.assertIsNone(self.service.feed(token, self.now()))
         self.assertIsNotNone(self.feed())
         bot.handlers.config = replace(self.config, calendar_public_url="")
-        message["text"] = "/calendar"
-        bot.handlers.handle_message(message)
+        menu_actions(bot, message, "calendar", "calendar:link")
         self.assertIn(
             "пока не настроен", bot.handlers.sender.send_message.call_args.args[1]
         )
@@ -851,49 +850,49 @@ class CalendarTests(unittest.TestCase):
         self.addCleanup(bot.close)
         bot.handlers.sender = MagicMock()
         bot.handlers.telegram.get_chat_member = MagicMock()
-        bot.handlers.handle_message(
+        menu_actions(
+            bot,
             {
                 "chat": {"id": 42, "type": "supergroup"},
                 "from": {"id": 5},
-                "text": "/calendar_off",
-            }
+            },
+            "calendar",
+            "calendar:revoke",
+            "calendar:confirm",
         )
         self.assertIsNone(self.service.feed(own_token, self.now()))
         self.assertIsNotNone(self.service.feed(other_token, self.now()))
         self.assertIsNotNone(self.feed())
         bot.handlers.telegram.get_chat_member.assert_not_called()
 
-    def test_format_command_is_personal_and_accepts_no_binding(self) -> None:
+    def test_format_buttons_are_personal_and_accept_no_binding(self) -> None:
         bot = Bot(self.config)
         self.addCleanup(bot.close)
         bot.handlers.sender = MagicMock()
         token = self.storage.calendar_subscription(42, None, 5)["token"]
-        message = {
-            "chat": {"id": 99, "type": "private"},
-            "from": {"id": 5},
-            "text": "/calendar_format short",
-        }
-        bot.handlers.handle_message(message)
+        message = {"chat": {"id": 99, "type": "private"}, "from": {"id": 5}}
+        session = menu_actions(bot, message, "calendar", "calendar:short")
         self.assertEqual(
             self.storage.calendar_feed_data(token, DAY, DAY)[0]["title_format"], "short"
         )
-        message["text"] = "/calendar_format invalid"
-        bot.handlers.handle_message(message)
-        self.assertIn(
-            "/calendar_format full", bot.handlers.sender.send_message.call_args.args[1]
+        bot.handlers.handle_callback(
+            {
+                "from": message["from"],
+                "message": {**message, "message_id": session.message_id},
+                "data": f"m:{session.token}:calendar:invalid",
+            }
         )
         self.assertEqual(
             self.storage.calendar_feed_data(token, DAY, DAY)[0]["title_format"], "short"
         )
-        message["text"] = "/calendar_format full"
-        message["sender_chat"] = {"id": 99}
-        bot.handlers.handle_message(message)
+        bot.handlers.handle_message(
+            {**message, "sender_chat": {"id": 99}, "text": "/menu"}
+        )
         self.assertIn("не анонимно", bot.handlers.sender.send_message.call_args.args[1])
         self.assertEqual(
             self.storage.calendar_feed_data(token, DAY, DAY)[0]["title_format"], "short"
         )
-        del message["sender_chat"]
-        bot.handlers.handle_message(message)
+        menu_actions(bot, message, "calendar", "calendar:full")
         self.assertEqual(
             self.storage.calendar_feed_data(token, DAY, DAY)[0]["title_format"], "full"
         )
@@ -913,9 +912,9 @@ class CalendarTests(unittest.TestCase):
             bot.handlers.handle_callback(
                 {"data": f"group:{group}", "message": message, "from": {"id": user_id}}
             )
-            bot.handlers.handle_message({**message, "text": "/calendar"})
-        bot.handlers.handle_message(
-            {"chat": {"id": 5}, "from": {"id": 5}, "text": "/calendar_format\tshort"}
+            menu_actions(bot, message, "calendar", "calendar:link")
+        menu_actions(
+            bot, {"chat": {"id": 5}, "from": {"id": 5}}, "calendar", "calendar:short"
         )
         bot.handlers.handle_callback(
             {

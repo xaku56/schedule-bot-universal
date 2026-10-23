@@ -258,12 +258,8 @@ class SnapshotTests(unittest.TestCase):
                     return original(snapshot, group, date, start)
 
                 with patch.object(ScheduleSnapshot, "schedule_for", calculate):
-                    bot.handlers.handle_message(
-                        {
-                            "chat": {"id": 42, "type": "private"},
-                            "from": {"id": 42},
-                            "text": "/week",
-                        }
+                    bot.handlers._send_week(
+                        42, None, "11 ис", "group", dt.datetime.now(bot.timezone)
                     )
                 self.assertEqual(len(bot.handlers.sender.messages), 6)
                 self.assertTrue(
