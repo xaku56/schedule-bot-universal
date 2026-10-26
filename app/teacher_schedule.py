@@ -67,6 +67,26 @@ def schedule_for_teacher(
     for group in schedules.groups():
         base = schedules.schedule_for(group, target_date, numerator_week_start)
         replacements = (replacements_by_group or {}).get(group, [])
+        relevant_pairs = {
+            int(lesson["pair"])
+            for lesson in base["pairs"]
+            if has_teacher(str(lesson.get("teacher", "")), teacher)
+        }
+        for replacement in replacements:
+            pair = _pair_number(replacement.get("pair", ""))
+            if pair is not None and any(
+                has_teacher(_replacement_lesson(replacement.get(field, ""))[0], teacher)
+                for field in ("from", "to")
+            ):
+                relevant_pairs.add(pair)
+        if not relevant_pairs:
+            continue
+        # Keep every row of a relevant pair so its real conflicts still surface.
+        replacements = [
+            row
+            for row in replacements
+            if _pair_number(row.get("pair", "")) in relevant_pairs
+        ]
         final = apply_replacements(base, replacements) if replacements else base
         final_by_pair = {int(lesson["pair"]): lesson for lesson in final["pairs"]}
         removed_pairs: set[int] = set()

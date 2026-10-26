@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from app.autopost import AutopostService
 from app.replacement_service import (
+    ReplacementConflictError,
     ReplacementRepository,
     _replacement_lesson,
     parse_replacements_all,
@@ -333,6 +334,51 @@ class TeacherScheduleTests(unittest.TestCase):
             )
             self.assertEqual(result["changes"][0]["group"], "13 ис")
             self.assertEqual(result["changes"][0]["pair"], 3)
+
+    def test_conflicts_only_block_teachers_involved_in_that_pair(self) -> None:
+        rows = [
+            {
+                "pair": "II",
+                "from": "Петров П.П.(Физика)",
+                "to": "Сидоров С.С.(История)",
+                "room": "201",
+            },
+            {
+                "pair": "2",
+                "from": "Кузнецов К.К.(Биология)",
+                "to": "Смирнов А.А.(Биология)",
+                "room": "202",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            schedules = repository(directory)
+            for group in ("11 ис", "13 ис"):
+                with self.subTest(group=group):
+                    result = schedule_for_teacher(
+                        schedules, "Иванова И.И.", TUESDAY, WEEK_START, {group: rows}
+                    )
+                    self.assertEqual(
+                        [(pair["group"], pair["pair"]) for pair in result["pairs"]],
+                        [("11 ис", 1), ("12 ис", 1)],
+                    )
+                    self.assertEqual(result["changes"], [])
+                    for teacher in (
+                        "Петров П.П.",
+                        "Сидоров С.С.",
+                        "Кузнецов К.К.",
+                        "Смирнов А.А.",
+                    ):
+                        with self.subTest(teacher=teacher):
+                            with self.assertRaises(ReplacementConflictError) as caught:
+                                schedule_for_teacher(
+                                    schedules,
+                                    teacher,
+                                    TUESDAY,
+                                    WEEK_START,
+                                    {group: rows},
+                                )
+                            self.assertEqual(caught.exception.rows, rows)
+            self.assertEqual(len(rows), 2)
 
     def test_week_format_keeps_two_groups_on_same_pair(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
