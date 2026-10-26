@@ -57,7 +57,7 @@ def _groups_keyboard(groups: list[str]) -> dict[str, Any]:
                 for group in groups[index : index + 2]
             ]
         )
-    rows.append([{"text": "← Курсы", "callback_data": "courses"}])
+    rows.append([{"text": "⬅️ Курсы", "callback_data": "courses"}])
     return {"inline_keyboard": rows}
 
 
@@ -117,11 +117,11 @@ class TelegramHandlers:
         navigation = []
         if page > 0:
             navigation.append(
-                {"text": "← Назад", "callback_data": f"teachers:{page - 1}"}
+                {"text": "⬅️ Назад", "callback_data": f"teachers:{page - 1}"}
             )
         if page + 1 < page_count:
             navigation.append(
-                {"text": "Далее →", "callback_data": f"teachers:{page + 1}"}
+                {"text": "➡️ Далее", "callback_data": f"teachers:{page + 1}"}
             )
         if navigation:
             rows.append(navigation)

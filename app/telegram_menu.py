@@ -126,11 +126,11 @@ class TelegramMenu:
             session,
             text,
             [
-                [("Сегодня", "today"), ("Завтра", "tomorrow")],
-                [("На дату", "date"), ("Неделя", "week")],
-                [("Другое расписание", "view")],
-                [("Календарь", "calendar"), ("Автоотправка", "autopost")],
-                [("Изменить выбор", "setup"), ("Справка", "help")],
+                [("📅 Сегодня", "today"), ("⏭️ Завтра", "tomorrow")],
+                [("🗓️ На дату", "date"), ("📆 Неделя", "week")],
+                [("🔎 Другое расписание", "view")],
+                [("📲 Календарь", "calendar"), ("🔔 Автоотправка", "autopost")],
+                [("⚙️ Изменить выбор", "setup"), ("ℹ️ Справка", "help")],
             ],
         )
 
@@ -145,8 +145,8 @@ class TelegramMenu:
             session,
             "Выбери группу или преподавателя.\n" + text,
             [
-                [("Группа", "groups"), ("Преподаватель", "teachers:0")],
-                [("Главное меню", "home")],
+                [("👥 Группа", "groups"), ("🧑‍🏫 Преподаватель", "teachers:0")],
+                [("🏠 Главное меню", "home")],
             ],
         )
 
@@ -157,7 +157,7 @@ class TelegramMenu:
             [
                 [(f"{course} курс", f"course:{course}") for course in (1, 2)],
                 [(f"{course} курс", f"course:{course}") for course in (3, 4)],
-                [("← Назад", "choose"), ("Главное меню", "home")],
+                [("⬅️ Назад", "choose"), ("🏠 Главное меню", "home")],
             ],
         )
 
@@ -167,7 +167,7 @@ class TelegramMenu:
             [(group.upper(), f"group:{group}") for group in groups[index : index + 2]]
             for index in range(0, len(groups), 2)
         ]
-        rows.append([("← Курсы", "groups"), ("Главное меню", "home")])
+        rows.append([("⬅️ Курсы", "groups"), ("🏠 Главное меню", "home")])
         self._render(session, f"Выбор группы {course} курса:", rows)
 
     def _teachers(self, session: MenuSession, page: int) -> None:
@@ -188,12 +188,12 @@ class TelegramMenu:
         ]
         navigation = []
         if page:
-            navigation.append(("← Назад", f"teachers:{page - 1}"))
+            navigation.append(("⬅️ Назад", f"teachers:{page - 1}"))
         if page + 1 < pages:
-            navigation.append(("Далее →", f"teachers:{page + 1}"))
+            navigation.append(("➡️ Далее", f"teachers:{page + 1}"))
         if navigation:
             rows.append(navigation)
-        rows.append([("Выбор типа", "choose"), ("Главное меню", "home")])
+        rows.append([("⬅️ Выбор типа", "choose"), ("🏠 Главное меню", "home")])
         self._render(
             session, f"Выбор преподавателя · страница {page + 1}/{pages}:", rows
         )
@@ -231,9 +231,9 @@ class TelegramMenu:
             session,
             f"<b>{label}: {html.escape(session.target_name)}</b>\nВыбор даты:",
             [
-                [("Сегодня", "day:today"), ("Завтра", "day:tomorrow")],
-                [("Другая дата", "day:custom")],
-                [("Другой выбор", "view"), ("Главное меню", "home")],
+                [("📅 Сегодня", "day:today"), ("⏭️ Завтра", "day:tomorrow")],
+                [("🗓️ Другая дата", "day:custom")],
+                [("🔎 Другой выбор", "view"), ("🏠 Главное меню", "home")],
             ],
         )
 
@@ -243,7 +243,7 @@ class TelegramMenu:
             session,
             "Ожидается ответ на сообщение с запросом даты.",
             [
-                [("← Выбор даты", "dates"), ("Главное меню", "home")],
+                [("⬅️ Выбор даты", "dates"), ("🏠 Главное меню", "home")],
             ],
         )
         text = f'<a href="tg://user?id={session.user_id}">{DATE_PROMPT}</a>'
@@ -324,8 +324,8 @@ class TelegramMenu:
             session,
             text,
             [
-                [("Другая дата", "dates"), ("Другой выбор", "view")],
-                [("Главное меню", "home")],
+                [("🗓️ Другая дата", "dates"), ("🔎 Другой выбор", "view")],
+                [("🏠 Главное меню", "home")],
             ],
         )
         session.prompt_id = None
@@ -337,13 +337,13 @@ class TelegramMenu:
             "Формат действует на все ваши личные подписки. "
             "Отзыв затрагивает только ваши ссылки этого чата или темы.",
             [
-                [("Получить ссылку", "calendar:link")],
+                [("🔗 Получить ссылку", "calendar:link")],
                 [
-                    ("Полный формат", "calendar:full"),
-                    ("Короткий формат", "calendar:short"),
+                    ("📝 Полный формат", "calendar:full"),
+                    ("🔤 Короткий формат", "calendar:short"),
                 ],
-                [("Отозвать ссылки", "calendar:revoke")],
-                [("Главное меню", "home")],
+                [("🚫 Отозвать ссылки", "calendar:revoke")],
+                [("🏠 Главное меню", "home")],
             ],
         )
 
@@ -363,11 +363,11 @@ class TelegramMenu:
             [
                 [
                     (
-                        "Выключить" if enabled else "Включить",
+                        "🔕 Выключить" if enabled else "🔔 Включить",
                         "autopost:off" if enabled else "autopost:on",
                     )
                 ],
-                [("Главное меню", "home")],
+                [("🏠 Главное меню", "home")],
             ],
         )
 
@@ -488,8 +488,8 @@ class TelegramMenu:
                 "Отозвать ваши личные ссылки этого чата или темы? "
                 "После этого подписки потребуется подключить заново.",
                 [
-                    [("Да, отозвать", "calendar:confirm")],
-                    [("Отмена", "calendar")],
+                    [("🚫 Да, отозвать", "calendar:confirm")],
+                    [("↩️ Отмена", "calendar")],
                 ],
             )
         elif action == "calendar:confirm":
