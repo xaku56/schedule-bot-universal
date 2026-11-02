@@ -17,7 +17,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.autopost import AutopostService
-from app.replacement_service import ReplacementConflictError, apply_replacements
+from app.replacement_service import (
+    ReplacementConflictError,
+    ReplacementRepository,
+    apply_replacements,
+)
 from app.schedule_service import ScheduleRepository, ScheduleSnapshot
 from app.storage import Storage
 from app.teacher_schedule import schedule_for_teacher
@@ -26,6 +30,67 @@ from app.telegram_queue import TelegramSendQueue
 from tests import test_bot as bot_tests
 from tests.test_autopost import FakeReplacements, FakeSchedules, FakeSender
 from tests.test_queue import FakeTelegramAPI
+
+
+class ReplacementFileLookupTests(unittest.TestCase):
+    def test_date_can_have_optional_day_and_month_zero_padding(self) -> None:
+        repository = ReplacementRepository("https://example.invalid")
+        for date, names in (
+            (
+                dt.date(2026, 11, 3),
+                (
+                    "3.11.2026.docx",
+                    "03.11.2026.docx",
+                    "Замены на 3.11.2026.DOCX",
+                ),
+            ),
+            (
+                dt.date(2026, 1, 3),
+                (
+                    "3.1.2026.docx",
+                    "03.1.2026.docx",
+                    "3.01.2026.docx",
+                    "03.01.2026.docx",
+                ),
+            ),
+        ):
+            for name in names:
+                with self.subTest(name=name):
+                    item = {"name": name}
+                    with patch.object(repository, "refresh_files", return_value=[item]):
+                        self.assertIs(repository.find_for_date(date), item)
+
+    def test_date_does_not_match_other_dates_or_non_docx_files(self) -> None:
+        repository = ReplacementRepository("https://example.invalid")
+        for name in (
+            "13.11.2026.docx",
+            "23.11.2026.docx",
+            "103.11.2026.docx",
+            "003.11.2026.docx",
+            "3.011.2026.docx",
+            "03.11.20260.docx",
+            "03.11.2027.docx",
+            "03.12.2026.docx",
+            "03.11.2026.pdf",
+            "03.11.2026.docx.bak",
+        ):
+            with (
+                self.subTest(name=name),
+                patch.object(
+                    repository, "refresh_files", return_value=[{"name": name}]
+                ),
+            ):
+                self.assertIsNone(repository.find_for_date(dt.date(2026, 11, 3)))
+
+    def test_most_recent_file_is_chosen_across_date_spellings(self) -> None:
+        repository = ReplacementRepository("https://example.invalid")
+        files = [
+            {"name": "03.11.2026.docx", "modified": "2026-11-01T10:00:00Z"},
+            {"name": "3.11.2026.docx", "modified": "2026-11-02T12:00:00Z"},
+            {"name": "13.11.2026.docx", "modified": "2026-11-02T13:00:00Z"},
+        ]
+        with patch.object(repository, "refresh_files", return_value=files):
+            self.assertIs(repository.find_for_date(dt.date(2026, 11, 3)), files[1])
 
 
 class ReplacementConflictTests(unittest.TestCase):

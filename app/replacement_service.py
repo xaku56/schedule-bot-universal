@@ -211,11 +211,15 @@ class ReplacementRepository:
             return list(self._files)
 
     def find_for_date(self, target_date: dt.date) -> dict[str, Any] | None:
-        date_token = target_date.strftime("%d.%m.%Y")
+        date_pattern = re.compile(
+            rf"(?<!\d)(?:{target_date.day}|{target_date.day:02d})"
+            rf"\.(?:{target_date.month}|{target_date.month:02d})"
+            rf"\.{target_date.year:04d}(?!\d)"
+        )
         matches = [
             item
             for item in self.refresh_files()
-            if date_token in str(item.get("name", ""))
+            if date_pattern.search(str(item.get("name", "")))
             and str(item.get("name", "")).casefold().endswith(".docx")
         ]
         return max(
