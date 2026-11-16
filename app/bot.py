@@ -4,7 +4,9 @@ import datetime as dt
 import html
 import http.client
 import logging
+import os
 import re
+import socket
 import threading
 import time
 import urllib.error
@@ -25,6 +27,16 @@ from .telegram_handlers import TelegramHandlers
 from .telegram_queue import TelegramSendQueue
 
 logger = logging.getLogger(__name__)
+
+
+def _notify_systemd_ready() -> None:
+    address = os.getenv("NOTIFY_SOCKET")
+    if not address:
+        return
+    if address.startswith("@"):
+        address = "\0" + address[1:]
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notify_socket:
+        notify_socket.sendto(b"READY=1", address)
 
 
 def _public_error(error: Exception) -> str:
@@ -273,8 +285,9 @@ class Bot:
         network_failures = 0
         try:
             self.initialize()
-            logger.info("Bot started groups=%s", len(self.schedules.groups()))
             self.calendar.start()
+            logger.info("Bot started groups=%s", len(self.schedules.groups()))
+            _notify_systemd_ready()
             while True:
                 retry_delay = 0
                 try:

@@ -28,6 +28,31 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().casefold() in {"1", "true", "yes", "on", "да"}
 
 
+def parse_calendar_public_url(value: str) -> str:
+    url = value.strip()
+    if not url:
+        return ""
+    url = url.rstrip("/")
+    error = "CALENDAR_PUBLIC_URL must be an HTTPS origin, e.g. https://calendar.example.org:8443"
+    if any(char.isspace() or char in "\\\"'=?#" for char in url):
+        raise ValueError(error)
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        raise ValueError(error) from None
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.path
+        or port == 0
+        or parsed.netloc.endswith(":")
+    ):
+        raise ValueError(error)
+    return url
+
+
 @dataclass(frozen=True)
 class Config:
     token: str
@@ -62,20 +87,7 @@ class Config:
         numerator_week_start = dt.date.fromisoformat(week_start_raw)
         if numerator_week_start.weekday() != 0:
             raise ValueError("NUMERATOR_WEEK_START must be a Monday")
-        calendar_url = os.getenv("CALENDAR_PUBLIC_URL", "").strip().rstrip("/")
-        parsed = urlsplit(calendar_url)
-        if calendar_url and (
-            parsed.scheme != "https"
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.path
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise ValueError(
-                "CALENDAR_PUBLIC_URL must be an HTTPS origin without a path"
-            )
+        calendar_url = parse_calendar_public_url(os.getenv("CALENDAR_PUBLIC_URL", ""))
         calendar_port = int(os.getenv("CALENDAR_PORT", "8765"))
         if not 1 <= calendar_port <= 65535:
             raise ValueError("CALENDAR_PORT must be between 1 and 65535")

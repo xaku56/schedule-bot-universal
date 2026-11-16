@@ -3,12 +3,14 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import http.client
+import os
+import socket
 import tempfile
 import unittest
 import urllib.error
 from concurrent.futures import Future
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch, sentinel
 
 from app.bot import Bot
 from app.config import Config
@@ -66,6 +68,32 @@ class BotTests(unittest.TestCase):
                 finally:
                     bot.close()
 
+    def test_notifies_systemd_after_calendar_starts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bot = self.make_bot(directory)
+            calls = MagicMock()
+            with (
+                patch.dict(os.environ, {"NOTIFY_SOCKET": "@systemd-notify"}),
+                patch.object(socket, "AF_UNIX", sentinel.af_unix, create=True),
+                patch("app.bot.socket.socket", calls.socket),
+                patch.object(bot, "initialize", calls.initialize),
+                patch.object(bot.schedules, "groups", return_value=[]),
+                patch.object(bot.calendar, "start", calls.calendar_start),
+                patch.object(bot.telegram, "updates", side_effect=KeyboardInterrupt),
+            ):
+                bot.run()
+            self.assertEqual(
+                calls.mock_calls[:3],
+                [
+                    call.initialize(),
+                    call.calendar_start(),
+                    call.socket(sentinel.af_unix, socket.SOCK_DGRAM),
+                ],
+            )
+            calls.socket.return_value.__enter__.return_value.sendto.assert_called_once_with(
+                b"READY=1", "\0systemd-notify"
+            )
+
     def test_initialization_failure_closes_workers_and_preserves_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             bot = self.make_bot(directory)
@@ -73,9 +101,11 @@ class BotTests(unittest.TestCase):
                 patch.object(
                     bot, "initialize", side_effect=RuntimeError("source unavailable")
                 ),
+                patch("app.bot._notify_systemd_ready") as notify,
                 self.assertRaisesRegex(RuntimeError, "source unavailable"),
             ):
                 bot.run()
+            notify.assert_not_called()
             self.assertTrue(bot._closed)
             self.assertFalse(bot.sender._worker.is_alive())
             self.assertTrue(bot.executor._shutdown)

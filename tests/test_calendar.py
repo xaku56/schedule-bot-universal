@@ -962,10 +962,19 @@ class CalendarTests(unittest.TestCase):
         ):
             default = Config.from_env()
             self.assertEqual(default.calendar_public_url, "")
+            with patch.dict(
+                os.environ, {"CALENDAR_PUBLIC_URL": "https://example.org:8443/"}
+            ):
+                self.assertEqual(
+                    Config.from_env().calendar_public_url, "https://example.org:8443"
+                )
             for key, value in (
                 ("CALENDAR_PUBLIC_URL", "http://example.org"),
                 ("CALENDAR_PUBLIC_URL", "https://user:pass@example.org"),
                 ("CALENDAR_PUBLIC_URL", "https://example.org/path"),
+                ("CALENDAR_PUBLIC_URL", "CALENDAR_PUBLIC_URL=https://example.org"),
+                ("CALENDAR_PUBLIC_URL", "https://example.org:invalid"),
+                ("CALENDAR_PUBLIC_URL", "https://example.org:65536"),
                 ("CALENDAR_PORT", "65536"),
             ):
                 with (
