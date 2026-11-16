@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from app.config import Config
+from app.config import Config, _load_env_file
 from app.pdf_parser import (
     PAIR_TIMES,
     WEEKDAYS,
@@ -273,6 +273,19 @@ class StorageTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_installation_template_provides_valid_numerator_monday(self) -> None:
+        template = Path(__file__).resolve().parents[1] / ".env.example"
+        with (
+            patch("app.config._load_env_file", lambda: _load_env_file(template)),
+            patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "test"}, clear=True),
+        ):
+            config = Config.from_env()
+            self.assertEqual(config.numerator_week_start.weekday(), 0)
+            self.assertEqual(
+                config.numerator_week_start.isoformat(),
+                os.environ["NUMERATOR_WEEK_START"],
+            )
+
     def test_numerator_week_must_be_explicit_monday(self) -> None:
         with (
             patch("app.config._load_env_file"),

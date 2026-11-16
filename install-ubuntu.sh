@@ -52,7 +52,7 @@ fi
 if [[ ! -f "$ENV_PATH" ]]; then
     read -rsp "Telegram bot token: " token
     echo
-    read -rp "Понедельник недели-числителя (YYYY-MM-DD): " week_start
+    week_start="${NUMERATOR_WEEK_START:-$(sed -n 's/^NUMERATOR_WEEK_START=//p' "$REPO_DIR/.env.example")}"
     if [[ ! "$token" =~ ^[0-9]{6,12}:[A-Za-z0-9_-]{30,}$ ]]; then
         echo "Токен Telegram имеет неверный формат." >&2
         exit 1
