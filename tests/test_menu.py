@@ -249,18 +249,25 @@ class MenuTests(unittest.TestCase):
         self.click(session, "calendar:confirm")
         self.assertIsNone(self.bot.storage.get_binding(-100, 10))
 
-    def test_expiry_restart_and_cancel_reject_old_buttons_and_date_replies(self):
+    def test_buttons_and_date_reply_still_work_after_idle(self):
+        with patch("time.monotonic", return_value=0) as monotonic:
+            session = self.open()
+            self.choose_group(session)
+            self.click(session, "day:custom")
+            monotonic.return_value = 3600
+            self.reply(session, "26.10.2026")
+            self.assertIn("Новая тема", self.sender.messages[-1]["text"])
+
+            monotonic.return_value = 7200
+            self.open(user=8)
+            self.click(session, "home")
+            self.assertIn("Главное меню", self.sender.messages[-1]["text"])
+
+    def test_restart_and_cancel_reject_old_buttons_and_date_replies(self):
         session = self.open()
         self.choose_group(session)
         self.click(session, "day:custom")
         prompt_id = session.prompt_id
-        with patch(
-            "app.telegram_menu.time.monotonic", return_value=session.expires_at + 1
-        ):
-            self.reply(session, "26.10.2026")
-            self.assertIn("устарело", self.sender.messages[-1]["text"])
-            self.click(session, "home")
-            self.assertIn("устарело", self.sender.messages[-1]["text"])
         self.click(session, "home")
         self.reply(session, "26.10.2026", prompt_id=prompt_id)
         self.assertIn("устарело", self.sender.messages[-1]["text"])

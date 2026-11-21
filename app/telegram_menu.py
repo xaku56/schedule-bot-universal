@@ -5,7 +5,6 @@ import hashlib
 import html
 import secrets
 import threading
-import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -15,7 +14,6 @@ from .teacher_schedule import teacher_key
 if TYPE_CHECKING:
     from .telegram_handlers import TelegramHandlers
 
-SESSION_SECONDS = 15 * 60
 DATE_PROMPT = "Введите дату расписания в формате ДД.ММ.ГГГГ."
 
 
@@ -25,7 +23,6 @@ class MenuSession:
     user_id: int
     chat_id: int
     thread_id: int | None
-    expires_at: float
     message_id: int | None = None
     prompt_id: int | None = None
     mode: str = "saved"
@@ -37,7 +34,7 @@ class MenuSession:
 
 
 class TelegramMenu:
-    """Button navigation and short-lived choices; permanent settings stay in Storage."""
+    """Keep menu navigation in memory and saved settings in Storage."""
 
     def __init__(self, handlers: TelegramHandlers) -> None:
         self.handlers = handlers
@@ -58,16 +55,8 @@ class TelegramMenu:
                 thread_id,
             )
             return
-        now = time.monotonic()
-        session = MenuSession(
-            secrets.token_hex(6), user_id, chat_id, thread_id, now + SESSION_SECONDS
-        )
+        session = MenuSession(secrets.token_hex(6), user_id, chat_id, thread_id)
         with self._lock:
-            self._sessions = {
-                key: value
-                for key, value in self._sessions.items()
-                if value.expires_at > now
-            }
             if len(self._sessions) >= 1000:
                 del self._sessions[next(iter(self._sessions))]
             self._sessions[session.token] = session
@@ -295,10 +284,9 @@ class TelegramMenu:
             self._unavailable(chat_id, thread_id)
             return
         with session.lock:
-            if session.expires_at <= time.monotonic() or session.prompt_id != prompt_id:
+            if session.prompt_id != prompt_id:
                 self._unavailable(chat_id, thread_id)
                 return
-            session.expires_at = time.monotonic() + SESSION_SECONDS
             try:
                 date = parse_flexible_date(str(message["text"]))
             except ValueError:
@@ -392,7 +380,6 @@ class TelegramMenu:
             if (
                 session.user_id != (callback.get("from") or {}).get("id")
                 or (session.chat_id, session.thread_id) != (chat_id, thread_id)
-                or session.expires_at <= time.monotonic()
                 or (
                     session.message_id is not None
                     and session.message_id != message.get("message_id")
@@ -402,7 +389,6 @@ class TelegramMenu:
                 self._unavailable(chat_id, thread_id)
                 return
             session.message_id = message.get("message_id")
-            session.expires_at = time.monotonic() + SESSION_SECONDS
             self._act(session, parts[2])
 
     def _act(self, session: MenuSession, action: str) -> None:
